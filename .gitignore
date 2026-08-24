@@ -1,0 +1,42 @@
+# --- Environments & secrets (never commit) -------------------
+.env
+.env.*
+!.env.example
+
+# --- Python ----------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+
+# --- Node / Next.js --------------------------------------------
+node_modules/
+.next/
+out/
+next-env.d.ts
+*.tsbuildinfo
+.eslintcache
+
+# --- Local volumes / dumps --------------------------------------
+.pgdata/
+.redisdata/
+*.sql.gz
+
+# --- Logs & OS ---------------------------------------------------
+*.log
+.DS_Store
+Thumbs.db
+
+# --- Editors / IDE -----------------------------------------------
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.swp

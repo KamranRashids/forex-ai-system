@@ -1,0 +1,10 @@
+node_modules/
+.next/
+out/
+*.log
+.eslintcache
+tsconfig.tsbuildinfo
+.env*
+!.env.example
+Dockerfile
+.dockerignore

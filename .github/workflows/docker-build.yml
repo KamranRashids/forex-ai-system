@@ -1,0 +1,25 @@
+name: Docker build
+
+on:
+  pull_request:
+    paths:
+      - "backend/**"
+      - "frontend/**"
+      - "docker-compose*.yml"
+      - "infra/**"
+      - ".github/workflows/docker-build.yml"
+
+jobs:
+  backend-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build backend prod image
+        run: docker build --target prod -t forex-ai-api:${{ github.sha }} ./backend
+
+  frontend-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build frontend prod image
+        run: docker build --target prod -t forex-ai-web:${{ github.sha }} ./frontend
