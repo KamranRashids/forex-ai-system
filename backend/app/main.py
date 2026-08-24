@@ -1,70 +1,96 @@
-"""Placeholder API entrypoint for the Phase 0 scaffold.
-
-Phase 1 replaces this with the real application core (typed settings,
-database, auth). SAFE MODE validation below is intentionally already
-enforced at layer L1/L4: the process refuses to boot unless
-TRADING_MODE == "safe".
-"""
+"""ASGI entrypoint for the API (SAFE MODE asserted at startup — layer L4)."""
 
 from __future__ import annotations
 
-import logging
-import os
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from typing import Any
 
+from asgi_correlation_id import CorrelationIdMiddleware
 from fastapi import FastAPI
 
-APP_NAME = "forex-ai-api"
-APP_VERSION = "0.0.1"
-
-LOGGER = logging.getLogger(APP_NAME)
-
-#: The only trading mode the system accepts in its current form (SAFE MODE, layer L1).
-ALLOWED_TRADING_MODES: frozenset[str] = frozenset({"safe"})
-
-
-def validate_safe_mode(raw_trading_mode: str | None) -> str:
-    """Validate the configured trading mode and return the normalized value.
-
-    Raises RuntimeError for anything except "safe" — this is SAFE MODE layer L1.
-    There is no bypass: live trading does not exist in this codebase.
-    """
-    mode = (raw_trading_mode or "").strip().lower()
-    if mode not in ALLOWED_TRADING_MODES:
-        raise RuntimeError(
-            f"Refusing to start: TRADING_MODE={raw_trading_mode!r} is not permitted. "
-            f"Only {sorted(ALLOWED_TRADING_MODES)!r} is allowed; "
-            "live order execution does not exist."
-        )
-    return mode
+from app.api.v1.auth import router as auth_router
+from app.api.v1.system import router as system_router
+from app.api.v1.users import router as users_router
+from app.core.config import Settings, get_settings
+from app.core.constants import API_V1_PREFIX, APP_VERSION
+from app.core.errors import register_exception_handlers
+from app.core.logging import configure_logging
+from app.core.metrics import MetricsMiddleware
+from app.db.session import dispose_engine, dispose_redis
 
 
-def create_app() -> FastAPI:
-    trading_mode = validate_safe_mode(os.getenv("TRADING_MODE", "safe"))
-    logging.basicConfig(
-        level=os.getenv("LOG_LEVEL", "INFO").upper(),
-        format="%(asctime)s %(levelname)s %(name)s %(message)s",
-    )
-    LOGGER.warning(
+def _log_banner(logger: Any, settings: Settings) -> None:
+    logger.warning(
         "SAFE MODE ACTIVE: paper trading only. Live order execution is not implemented anywhere.",
+        mode=settings.trading_mode,
+        app_env=settings.app_env,
+        version=APP_VERSION,
     )
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    # SAFE MODE banner is logged in create_app() so it fires on every import
+    # (including reloads and test clients); here we only manage resources.
+    yield
+    await dispose_engine()
+    await dispose_redis()
+
+
+def create_app(settings: Settings | None = None) -> FastAPI:
+    resolved = settings or get_settings()
+    configure_logging(log_level=resolved.log_level, json_logs=resolved.json_logs)
+    logger = _get_logger()
 
     app = FastAPI(
         title="Forex AI System API",
         version=APP_VERSION,
-        description="Multi-agent Forex analysis — PAPER TRADING ONLY (SAFE MODE).",
+        description=(
+            "Multi-agent Forex analysis API.\n\n"
+            "**SAFE MODE: PAPER TRADING ONLY.** This system never connects to a "
+            "brokerage and cannot place live orders; live order execution does "
+            "not exist in this codebase."
+        ),
+        license_info={"name": "MIT"},
+        openapi_tags=[
+            {"name": "system", "description": "Service metadata, health probes, status matrix"},
+            {"name": "auth", "description": "Registration, login, token rotation, logout"},
+            {"name": "users", "description": "Admin user management (RBAC-gated)"},
+        ],
+        lifespan=lifespan,
     )
 
-    @app.get("/", tags=["system"])
-    def root() -> dict[str, str]:
-        """Service metadata."""
-        return {"name": APP_NAME, "version": APP_VERSION, "mode": trading_mode}
+    origins = resolved.cors_origin_list
+    if origins:
+        from fastapi.middleware.cors import CORSMiddleware
 
-    @app.get("/health/live", tags=["health"])
-    def health_live() -> dict[str, str]:
-        """Liveness probe."""
-        return {"status": "ok", "mode": trading_mode}
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=origins,
+            allow_credentials=True,
+            allow_methods=["GET", "POST", "PATCH", "DELETE"],
+            allow_headers=["Authorization", "Content-Type", "X-Requested-With"],
+        )
 
+    app.add_middleware(CorrelationIdMiddleware)
+    app.add_middleware(MetricsMiddleware)
+
+    register_exception_handlers(app)
+
+    # System/health endpoints live at the root (probe-friendly).
+    app.include_router(system_router)
+    app.include_router(auth_router, prefix=API_V1_PREFIX)
+    app.include_router(users_router, prefix=API_V1_PREFIX)
+
+    _log_banner(logger, resolved)
     return app
+
+
+def _get_logger() -> Any:
+    from structlog.stdlib import get_logger
+
+    return get_logger(__name__)
 
 
 app = create_app()

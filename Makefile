@@ -12,6 +12,7 @@ BIN          := $(CURDIR)/$(VENV)/bin
 .DEFAULT_GOAL := help
 .PHONY: help dev dev-down dev-destroy prod-up prod-down logs ps \
 	backend-venv format-backend lint-backend typecheck-backend test-backend \
+	test-backend-unit test-backend-integration coverage-backend migrate-backend \
 	install-frontend lint-frontend typecheck-frontend build-frontend \
 	verify clean
 
@@ -53,8 +54,20 @@ lint-backend: ## Lint backend code with ruff
 typecheck-backend: ## Type-check backend code with mypy
 	cd $(BACKEND_DIR) && $(BIN)/mypy app
 
-test-backend: ## Run backend tests
+test-backend: ## Run backend tests (integration tests skip if no local PostgreSQL)
 	cd $(BACKEND_DIR) && $(BIN)/pytest
+
+test-backend-unit: ## Run unit suite with the strict coverage gate
+	cd $(BACKEND_DIR) && $(BIN)/pytest tests/unit --cov=app --cov-report=term-missing
+
+test-backend-integration: ## Run integration tests (requires docker compose postgres+redis up)
+	cd $(BACKEND_DIR) && $(BIN)/pytest tests/integration
+
+coverage-backend: ## Open HTML coverage report for the unit suite
+	cd $(BACKEND_DIR) && $(BIN)/pytest tests/unit --cov=app --cov-report=html && $(BIN)/python -m webbrowser -t htmlcov/index.html 2>/dev/null || true
+
+migrate-backend: ## Apply database migrations using backend/.venv (host-side DATABASE_URL)
+	cd $(BACKEND_DIR) && $(BIN)/alembic upgrade head
 
 install-frontend: ## Install frontend node modules (npm ci)
 	cd $(FRONTEND_DIR) && npm ci

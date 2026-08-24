@@ -49,9 +49,27 @@ make backend-venv        # one-time: backend/.venv + runtime/dev deps
 make verify              # ruff format+lint, mypy, pytest, eslint, tsc  ← run before pushing
 ```
 
+Backend test targets:
+
+```bash
+make test-backend-unit         # unit suite + strict coverage gate (≥90% on the sync core)
+make test-backend-integration  # real PostgreSQL/Redis: auth flows, token rotation, RBAC matrix
+make migrate-backend           # apply Alembic migrations with host-side DATABASE_URL
+```
+
+Create the first account (the bootstrap admin — the API's register endpoint also
+promotes the first user to admin automatically):
+
+```bash
+docker compose exec api python -m app.cli createuser --email you@example.com --role admin
+curl -s -X POST http://localhost:8000/api/v1/auth/login \
+  -d 'username=you@example.com&password=...'   # OAuth2 password flow → bearer token
+```
+
 Useful targets: `logs`, `ps`, `format-backend`, `lint-backend`, `typecheck-backend`,
-`test-backend`, `install-frontend`, `lint-frontend`, `typecheck-frontend`, `build-frontend`,
-`prod-up`, `prod-down`, `clean`. Run `make help` for the full list.
+`test-backend`, `test-backend-unit`, `test-backend-integration`, `coverage-backend`,
+`migrate-backend`, `install-frontend`, `lint-frontend`, `typecheck-frontend`,
+`build-frontend`, `prod-up`, `prod-down`, `clean`. Run `make help` for the full list.
 
 Install the git hook integration once per clone:
 
@@ -66,8 +84,9 @@ Phases follow `IMPLEMENTATION_PLAN.md` §14. Each phase is verified before the n
 | Phase | Scope | Status |
 |---|---|---|
 | 0 | Repository foundation & infra scaffold | ✅ done |
-| 1 | Backend core (config, DB, auth, health) | ⏳ awaiting approval |
-| 2–11 | Data layer → agents → risk/orchestrator → backtesting → paper trading → API → frontend → hardening → release | ⏳ pending |
+| 1 | Backend core (config, DB, auth, health) | ✅ done |
+| 2 | Market data layer (providers, ingest, candles) | ⏳ next |
+| 3–11 | Agents → risk/orchestrator → backtesting → paper trading → API → frontend → hardening → release | ⏳ pending |
 
 ## Repository layout
 
