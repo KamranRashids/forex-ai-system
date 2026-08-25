@@ -12,6 +12,7 @@ def bars_closed_topic(timeframe: str) -> str:
 
 PRICES_LIVE_CHANNEL: str = "prices.live"
 EVENTS_ALERTS_CHANNEL: str = "events.alerts"
+SIGNALS_STREAM: str = "signals.stream"
 
 STREAM_MAXLEN_APPROX: int = 100_000
 

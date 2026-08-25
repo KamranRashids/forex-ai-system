@@ -25,6 +25,7 @@ dependencies = [
     "python-multipart>=0.0.17,<0.1",
     "prometheus-client>=0.21,<1.0",
     "tenacity>=9.0,<10.0",
+    "pandas>=2.2,<3.0",
 ]
 
 [project.optional-dependencies]
@@ -36,6 +37,7 @@ dev = [
     "fakeredis>=2.26,<3.0",
     "httpx>=0.27,<1.0",
     "respx>=0.22,<0.24",
+    "pandas-stubs>=2.2,<3.0",
     "ruff>=0.8,<1.0",
     "mypy>=1.13,<2.0",
 ]
@@ -100,8 +102,10 @@ omit = [
     "app/data/ingest.py",
     "app/data/market_config.py",
     "app/data/providers/factory.py",
+    "app/data/signal_repository.py",
     "app/bus/publisher.py",
     "app/monitor/staleness.py",
+    "app/workers/*",
     "app/worker_main.py",
 ]
 

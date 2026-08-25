@@ -10,6 +10,7 @@ from app.bus.events import Event
 from app.bus.topics import (
     EVENTS_ALERTS_CHANNEL,
     PRICES_LIVE_CHANNEL,
+    SIGNALS_STREAM,
     STREAM_MAXLEN_APPROX,
     bars_closed_topic,
     latest_price_key,
@@ -22,6 +23,8 @@ class EventPublisher(Protocol):
     async def publish_price(self, event: Event) -> None: ...
 
     async def publish_alert(self, event: Event) -> None: ...
+
+    async def publish_signal(self, event: Event) -> None: ...
 
     async def set_latest_price(self, symbol: str, quote_json: str) -> None: ...
 
@@ -47,6 +50,14 @@ class RedisEventPublisher:
     async def publish_alert(self, event: Event) -> None:
         await self._redis.publish(EVENTS_ALERTS_CHANNEL, event.to_json())
 
+    async def publish_signal(self, event: Event) -> None:
+        await self._redis.xadd(
+            SIGNALS_STREAM,
+            {"data": event.to_json()},
+            maxlen=STREAM_MAXLEN_APPROX,
+            approximate=True,
+        )
+
     async def set_latest_price(self, symbol: str, quote_json: str) -> None:
         await self._redis.set(latest_price_key(symbol), quote_json)
 
@@ -61,6 +72,9 @@ class NullEventPublisher:
         return None
 
     async def publish_alert(self, event: Event) -> None:
+        return None
+
+    async def publish_signal(self, event: Event) -> None:
         return None
 
     async def set_latest_price(self, symbol: str, quote_json: str) -> None:

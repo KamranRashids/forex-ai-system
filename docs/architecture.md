@@ -56,6 +56,25 @@ External providers            Docker Compose network
 - The FX week model: Sunday 22:00 → Friday 22:00 UTC continuous; staleness alerts are
   suppressed while the market is closed.
 
+## Agents (Phase 3)
+
+- Contract (§3.3): `BaseAgent.analyze(AnalysisContext) -> AgentSignal`; every
+  signal carries the agent's `version`, direction ∈ {LONG, SHORT, FLAT},
+  confidence ∈ [0,1], full indicator snapshot in `features`, and a freshness
+  horizon (`valid_until` = bucket + 2×tf for technical, 4×tf for regime).
+- **Technical agent** scores nine documented votes (EMA cross, SMA50, MACD
+  histogram, RSI midline/extremes, Bollinger breakout, Stochastic, Donchian,
+  prior-day pivots) with ATR-relative dead-zones and ADX trend-gating;
+  thresholds ±0.15 separate LONG/SHORT from FLAT.
+- **Regime agent** emits conditioning metadata only (direction always FLAT):
+  trending / weakening_trend / transitional / range from ADX level+slope,
+  ATR% tercile volatility buckets, and UTC session labels.
+- Persistence is idempotent: unique key `(agent_id, symbol, timeframe,
+  bucket_ts)`; replays never duplicate rows and `run_id` records the first
+  processing batch. Signals also publish to `signals.stream` for the Phase 5
+  orchestrator; the agents consumer group applies latest-bar-per-pair
+  backpressure on backlog.
+
 ## Operating rules
 
 1. All timestamps UTC.

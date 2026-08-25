@@ -21,6 +21,27 @@ REQUEST_LATENCY = Histogram(
     buckets=(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0),
 )
 
+# --- Agent runtime (Phase 3) -------------------------------------------------
+AGENT_BAR_LATENCY = Histogram(
+    "agent_bar_latency_seconds",
+    "Time to analyze one closed bar and persist its signals, per agent",
+    ["agent"],
+    buckets=(0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0),
+)
+AGENT_SIGNALS_TOTAL = Counter(
+    "agent_signals_total",
+    "Signals published to signals.stream per agent",
+    ["agent", "outcome"],
+)
+AGENT_SIGNALS_STORED = Counter(
+    "agent_signals_stored_total",
+    "Freshly persisted signal rows (replays excluded)",
+)
+AGENT_BARS_SKIPPED_STALE = Counter(
+    "agent_bars_skipped_stale_total",
+    "Backlog bars dropped by the latest-bar-per-pair policy",
+)
+
 _UNMATCHED: str = "<unmatched>"
 
 

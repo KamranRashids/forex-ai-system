@@ -11,6 +11,7 @@ from fastapi import FastAPI
 
 from app.api.v1.admin import router as admin_router
 from app.api.v1.auth import router as auth_router
+from app.api.v1.signals import router as signals_router
 from app.api.v1.system import router as system_router
 from app.api.v1.users import router as users_router
 from app.core.config import Settings, get_settings
@@ -58,6 +59,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             {"name": "system", "description": "Service metadata, health probes, status matrix"},
             {"name": "auth", "description": "Registration, login, token rotation, logout"},
             {"name": "users", "description": "Admin user management (RBAC-gated)"},
+            {
+                "name": "admin",
+                "description": "Market universe config and backfill triggers (admin-only)",
+            },
+            {"name": "signals", "description": "Persisted agent signals (viewer+)"},
         ],
         lifespan=lifespan,
     )
@@ -84,6 +90,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(auth_router, prefix=API_V1_PREFIX)
     app.include_router(users_router, prefix=API_V1_PREFIX)
     app.include_router(admin_router, prefix=API_V1_PREFIX)
+    app.include_router(signals_router, prefix=API_V1_PREFIX)
 
     _log_banner(logger, resolved)
     return app
