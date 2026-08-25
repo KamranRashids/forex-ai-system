@@ -9,6 +9,7 @@ from typing import Any
 from asgi_correlation_id import CorrelationIdMiddleware
 from fastapi import FastAPI
 
+from app.api.v1.admin import router as admin_router
 from app.api.v1.auth import router as auth_router
 from app.api.v1.system import router as system_router
 from app.api.v1.users import router as users_router
@@ -82,6 +83,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(system_router)
     app.include_router(auth_router, prefix=API_V1_PREFIX)
     app.include_router(users_router, prefix=API_V1_PREFIX)
+    app.include_router(admin_router, prefix=API_V1_PREFIX)
 
     _log_banner(logger, resolved)
     return app

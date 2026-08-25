@@ -75,6 +75,46 @@ services:
       retries: 12
       start_period: 20s
 
+  worker-ingest:
+    build:
+      context: ./backend
+      target: dev
+    restart: unless-stopped
+    command:
+      sh -c "alembic upgrade head && python -m app.worker_main"
+    environment:
+      APP_ENV: ${APP_ENV:-dev}
+      TRADING_MODE: ${TRADING_MODE:-safe}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      SECRET_KEY: ${SECRET_KEY:-dev-only-insecure-secret-key-change-me-0123456789abcdef}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-forex}:${POSTGRES_PASSWORD:-forex_dev_password}@postgres:5432/${POSTGRES_DB:-forex_ai}
+      REDIS_URL: redis://redis:6379/0
+      WORKER_ROLE: ingest
+      MARKET_DATA_PROVIDER: ${MARKET_DATA_PROVIDER:-synthetic}
+      MARKET_DATA_SYMBOLS: ${MARKET_DATA_SYMBOLS:-EURUSD,GBPUSD,USDJPY,AUDUSD,USDCAD,USDCHF,NZDUSD}
+      MARKET_DATA_TIMEFRAMES: ${MARKET_DATA_TIMEFRAMES:-M15,H1,H4}
+      OANDA_API_TOKEN: ${OANDA_API_TOKEN:-}
+      OANDA_ENV: ${OANDA_ENV:-practice}
+      INGEST_INTERVAL_SECONDS: ${INGEST_INTERVAL_SECONDS:-10}
+    volumes:
+      # Source bind-mounts keep the worker hot-reloadable alongside the API.
+      - ./backend/app:/app/app
+      - ./backend/migrations:/app/migrations
+      - ./backend/alembic.ini:/app/alembic.ini:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'app.worker_main' >/dev/null"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 20s
+
   web:
     build:
       context: ./frontend

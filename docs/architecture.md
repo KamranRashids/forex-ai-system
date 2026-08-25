@@ -38,6 +38,24 @@ External providers            Docker Compose network
 - ADR-0004 — LLM abstraction (OpenCode Zen / Ox Alpha Free first, deterministic fallbacks mandatory)
 - ADR-0005 — Product scope (single-user first, MIT)
 
+## Ingestion strategy (Phase 2)
+
+- Providers return **native candles per timeframe** (`fetch_candles`); there is no
+  tick→M1 aggregation pipeline in v1. This mirrors how OANDA serves history and keeps
+  the synthetic provider simple; cross-TF aggregation can be layered later behind the
+  same interface if a base-timeframe feed is ever introduced.
+- The **synthetic** generator is deterministic value-noise keyed by
+  `(symbol, timeframe, bucket)` — order-independent, restart-safe, and backfill-friendly.
+  It is a fixture, never a forecast.
+- Bars are stored with **upsert-on-close** semantics (composite PK
+  `instrument_id, timeframe, ts`; `complete` may never regress). Gap detection compares
+  expected buckets against returned bars per cycle for observability.
+- Durable facts go to PostgreSQL; Redis carries `bars.closed.{tf}` streams,
+  `prices.live` Pub/Sub quotes, latest-price cache keys, breaker state in PG, and a
+  lightweight admin backfill queue drained by the ingest worker.
+- The FX week model: Sunday 22:00 → Friday 22:00 UTC continuous; staleness alerts are
+  suppressed while the market is closed.
+
 ## Operating rules
 
 1. All timestamps UTC.

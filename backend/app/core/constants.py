@@ -28,3 +28,5 @@ class AuditActions:
     TOKEN_REUSE_DETECTED = "auth.token_reuse_detected"
     LOGGED_OUT = "auth.logged_out"
     USER_UPDATED = "admin.user_updated"
+    MARKET_CONFIG_UPDATED = "admin.market_config_updated"
+    BACKFILL_TRIGGERED = "admin.backfill_triggered"

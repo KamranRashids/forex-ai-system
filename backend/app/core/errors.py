@@ -79,6 +79,14 @@ class ConflictError(AppError):
     title = "Conflicting resource"
 
 
+class InvalidInputError(AppError):
+    """Semantically invalid input that passes schema validation."""
+
+    status_code = 400
+    code = "invalid_input"
+    title = "Invalid input"
+
+
 class RateLimitError(AppError):
     status_code = 429
     code = "rate_limited"

@@ -71,6 +71,22 @@ class Settings(BaseSettings):
     rate_limit_register_per_minute: int = Field(default=5, gt=0)
     rate_limit_refresh_per_minute: int = Field(default=30, gt=0)
 
+    # --- Market data (Phase 2) ---------------------------------------------------
+    #: Provider-independent ingestion (ADR-0003). Only "synthetic" needs no
+    #: credentials; "oanda" requires OANDA_API_TOKEN and practice-only env.
+    market_data_provider: str = "synthetic"
+    market_data_symbols: str = "EURUSD,GBPUSD,USDJPY,AUDUSD,USDCAD,USDCHF,NZDUSD"
+    #: Any of M5,M15,H1,H4,D1 (engine is generic; ADR-0003 default starts M15/H1/H4).
+    market_data_timeframes: str = "M15,H1,H4"
+    oanda_api_token: str = ""
+    oanda_env: str = "practice"  # only "practice" is permitted in v1
+    ingest_interval_seconds: int = Field(default=10, ge=1)
+    ingest_max_bars_per_cycle: int = Field(default=500, ge=1)
+    ingest_initial_history_days: int = Field(default=2, ge=0)
+    provider_breaker_failure_threshold: int = Field(default=5, ge=1)
+    provider_breaker_cooldown_seconds: int = Field(default=60, ge=1)
+    staleness_poll_seconds: int = Field(default=30, ge=1)
+
     @field_validator("trading_mode", mode="before")
     @classmethod
     def _enforce_safe_mode(cls, value: object) -> str:
@@ -94,6 +110,65 @@ class Settings(BaseSettings):
                 "generate a strong random value before running with APP_ENV=prod."
             )
         return self
+
+    @field_validator("market_data_provider")
+    @classmethod
+    def _validate_provider(cls, value: str) -> str:
+        provider = value.strip().lower()
+        allowed = {"synthetic", "oanda"}
+        if provider not in allowed:
+            raise ValueError(
+                f"MARKET_DATA_PROVIDER must be one of {sorted(allowed)}; got {value!r}"
+            )
+        # Token presence is validated at adapter construction so tests can
+        # build Settings freely without credentials.
+        return provider
+
+    @field_validator("market_data_timeframes")
+    @classmethod
+    def _validate_timeframes(cls, value: str) -> str:
+        from app.data.timeframes import Timeframe
+
+        raw = [part.strip().upper() for part in value.split(",") if part.strip()]
+        if not raw:
+            raise ValueError("MARKET_DATA_TIMEFRAMES must contain at least one timeframe")
+        unknown = [tf for tf in raw if tf not in Timeframe.values()]
+        if unknown:
+            raise ValueError(
+                f"Unknown timeframes {unknown}; supported: {sorted(Timeframe.values())}"
+            )
+        ordered = [tf for tf in Timeframe.values() if tf in raw]
+        return ",".join(ordered)
+
+    @field_validator("market_data_symbols")
+    @classmethod
+    def _validate_symbols(cls, value: str) -> str:
+        symbols = [s.strip().upper() for s in value.split(",") if s.strip()]
+        if not symbols:
+            raise ValueError("MARKET_DATA_SYMBOLS must contain at least one pair")
+        for symbol in symbols:
+            if len(symbol) != 6 or not symbol.isalpha():
+                raise ValueError(f"Invalid FX pair {symbol!r}; expected 6-letter form like EURUSD")
+        return ",".join(symbols)
+
+    @field_validator("oanda_env")
+    @classmethod
+    def _enforce_oanda_practice_only(cls, value: str) -> str:
+        env = value.strip().lower()
+        if env != "practice":
+            raise ValueError(
+                f'OANDA_ENV must be "practice"; got {value!r}. '
+                "Live/real-money environments do not exist in this system (SAFE MODE)."
+            )
+        return env
+
+    @property
+    def market_symbols(self) -> list[str]:
+        return [s.strip().upper() for s in self.market_data_symbols.split(",") if s.strip()]
+
+    @property
+    def market_timeframes(self) -> list[str]:
+        return [tf.strip().upper() for tf in self.market_data_timeframes.split(",") if tf.strip()]
 
     @property
     def cors_origin_list(self) -> list[str]:

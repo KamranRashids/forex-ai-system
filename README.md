@@ -85,8 +85,9 @@ Phases follow `IMPLEMENTATION_PLAN.md` §14. Each phase is verified before the n
 |---|---|---|
 | 0 | Repository foundation & infra scaffold | ✅ done |
 | 1 | Backend core (config, DB, auth, health) | ✅ done |
-| 2 | Market data layer (providers, ingest, candles) | ⏳ next |
-| 3–11 | Agents → risk/orchestrator → backtesting → paper trading → API → frontend → hardening → release | ⏳ pending |
+| 2 | Market data layer (providers, ingest worker, candles) | ✅ done |
+| 3 | Agent framework + technical & regime agents | ⏳ next |
+| 4–11 | Fundamental/sentiment → risk/orchestrator/paper executor → backtesting → API → frontend → hardening → release | ⏳ pending |
 
 ## Repository layout
 

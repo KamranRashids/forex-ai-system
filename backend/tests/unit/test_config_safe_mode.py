@@ -78,3 +78,50 @@ def test_get_settings_is_cached_and_resettable(monkeypatch: pytest.MonkeyPatch) 
 def test_cookie_secure_only_in_prod() -> None:
     assert Settings(app_env="dev").cookie_secure is False
     assert Settings(app_env="prod", secret_key="p" * 40).cookie_secure is True
+
+
+# --- Phase 2: market-data configuration ---------------------------------------
+
+
+@pytest.mark.unit
+def test_market_timeframes_normalized_and_ordered() -> None:
+    settings = Settings(market_data_timeframes="h4,m15,d1")
+    assert settings.market_data_timeframes == "M15,H4,D1"
+    assert settings.market_timeframes == ["M15", "H4", "D1"]
+
+
+@pytest.mark.unit
+def test_unknown_timeframe_rejected() -> None:
+    with pytest.raises(ValidationError, match="Unknown timeframes"):
+        Settings(market_data_timeframes="M1,W1")
+
+
+@pytest.mark.unit
+def test_invalid_pair_rejected() -> None:
+    for bad in ("EUR", "EURUSD!", "eur$usd"):
+        with pytest.raises(ValidationError, match="Invalid FX pair"):
+            Settings(market_data_symbols=bad)
+
+
+@pytest.mark.unit
+def test_unknown_provider_rejected() -> None:
+    with pytest.raises(ValidationError, match="MARKET_DATA_PROVIDER"):
+        Settings(market_data_provider="bloomberg")
+
+
+@pytest.mark.safety
+@pytest.mark.unit
+@pytest.mark.parametrize("bad_env", ["live", "prod", "real", "LIVE"])
+def test_oanda_live_environment_rejected(bad_env: str) -> None:
+    """SAFE MODE extends to provider configuration: only practice exists."""
+    with pytest.raises(ValidationError, match='OANDA_ENV must be "practice"'):
+        Settings(oanda_env=bad_env)
+
+
+@pytest.mark.unit
+def test_default_market_config_matches_adr0003() -> None:
+    settings = Settings()
+    assert settings.market_data_provider == "synthetic"
+    assert settings.market_symbols[0] == "EURUSD"
+    assert len(settings.market_symbols) == 7
+    assert settings.market_timeframes == ["M15", "H1", "H4"]

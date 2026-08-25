@@ -36,7 +36,15 @@ TEST_DATABASE_URL: str = os.getenv(
 # inside the sandbox (env vars take precedence over .env files).
 os.environ["DATABASE_URL"] = TEST_DATABASE_URL
 
-TABLES: tuple[str, ...] = ("audit_log", "refresh_tokens", "system_settings", "users")
+TABLES: tuple[str, ...] = (
+    "audit_log",
+    "refresh_tokens",
+    "system_settings",
+    "users",
+    "candles",
+    "instruments",
+    "provider_health",
+)
 
 
 def _root_url() -> str:
