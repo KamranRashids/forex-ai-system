@@ -75,6 +75,29 @@ External providers            Docker Compose network
   orchestrator; the agents consumer group applies latest-bar-per-pair
   backpressure on backlog.
 
+## Content ingestion (Phase 4)
+
+- News and economic-calendar ingestion behind two provider interfaces —
+  `NewsProvider` (news) and `CalendarProvider` (economic calendar) — so downstream
+  agents and the API depend only on normalized data, never on an external provider.
+- Each interface has two adapters behind a single factory:
+  `finnhub_{news,calendar}` (primary, used only when a key is configured) and
+  `synthetic_{news,calendar}` (deterministic seeded/demo data, the default).
+  Missing/blank/invalid/rate-limited/unavailable credentials degrade gracefully to the
+  synthetic adapter.
+- Normalized records carry UTC timestamps, source/provider metadata, and a stable
+  dedup key (news: url-hash; calendar: provider event UID). Persistence is
+  idempotent — replays never duplicate rows (migration `0004` adds
+  `news_items` / `economic_events`).
+- Provider tokens are used only for outbound auth and never appear in persisted
+  records, API responses, or logs (`raw_payload` is sanitized to safe fields).
+- **Fundamental agent** scores event-window risk states from calendar proximity +
+  surprise (actual vs forecast); **sentiment agent** scores headlines via a
+  finance-lexicon model → rolling per-currency/pair aggregate with decay.
+- LLM reasoning is optional and gated by `LLMClient` (ADR-0004): every LLM-backed
+  agent keeps a deterministic fallback (calendar-proximity impact model;
+  finance-lexicon sentiment), and `LLM_DAILY_BUDGET_USD` bounds spend.
+
 ## Operating rules
 
 1. All timestamps UTC.

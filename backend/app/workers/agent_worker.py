@@ -17,7 +17,7 @@ from __future__ import annotations
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pandas as pd
@@ -165,6 +165,7 @@ class AgentWorker:
             index=[r.ts for r in candles],
         )
         prev_daily = await self._prev_daily(instrument.id)
+        content = await self._load_content(symbol, timeframe, bucket_ts)
 
         signals = []
         for agent in self._agents:
@@ -179,6 +180,7 @@ class AgentWorker:
                     "run_id": run_id,
                     "prev_daily": prev_daily,
                     "pip_size": float(instrument.pip_size),
+                    **content,
                 },
             )
             signal = agent.analyze(ctx)
@@ -261,6 +263,80 @@ class AgentWorker:
             return None
         return {"high": float(row.high), "low": float(row.low), "close": float(row.close)}
 
+    async def _load_content(
+        self, symbol: str, timeframe: str, bucket_ts: datetime
+    ) -> dict[str, Any]:
+        """Load normalized news/events for the pair's currencies (P4 agents).
+
+        Agents consume only this normalized internal data; providers are polled
+        and persisted by the content worker, never by agents or here.
+        """
+        from sqlalchemy import and_, select
+
+        from app.models.economic_event import EconomicEvent
+        from app.models.news_item import NewsItem
+
+        base, quote = symbol[:3], symbol[3:]
+        window = timedelta(hours=12)
+        since = bucket_ts - window
+        until = bucket_ts + window
+        lookback = timedelta(days=2)
+
+        async with self._sessions() as session:
+            news_rows = list(
+                (
+                    await session.execute(
+                        select(NewsItem)
+                        .where(NewsItem.published_utc >= since - lookback)
+                        .order_by(NewsItem.published_utc.desc())
+                        .limit(50)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            event_rows = list(
+                (
+                    await session.execute(
+                        select(EconomicEvent)
+                        .where(
+                            and_(
+                                EconomicEvent.timestamp_utc >= since,
+                                EconomicEvent.timestamp_utc < until,
+                                EconomicEvent.currency.in_([base, quote]),
+                            )
+                        )
+                        .order_by(EconomicEvent.timestamp_utc.desc())
+                        .limit(50)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+
+        news: list[dict[str, Any]] = [
+            {
+                "headline": row.headline,
+                "published_utc": row.published_utc,
+                "symbols": list(row.symbols),
+                "provider": row.provider,
+            }
+            for row in news_rows
+            if not row.symbols or _symbols_touch(row.symbols, symbol)
+        ]
+        events: list[dict[str, Any]] = [
+            {
+                "timestamp_utc": row.timestamp_utc,
+                "importance": row.importance,
+                "currency": row.currency,
+                "actual": row.actual,
+                "forecast": row.forecast,
+                "title": row.title,
+            }
+            for row in event_rows
+        ]
+        return {"news": news, "events": events}
+
     # --- runner -----------------------------------------------------------------
 
     async def run_forever(self, *, block_ms: int = 5_000) -> None:  # pragma: no cover
@@ -281,6 +357,12 @@ def _field(fields: dict[str, str], key: str) -> str:
     if isinstance(raw, bytes):
         return raw.decode()
     return str(raw or "")
+
+
+def _symbols_touch(symbols: list[str], pair: str) -> bool:
+    """True when a news item's symbols reference the given FX pair."""
+    base, quote = pair[:3], pair[3:]
+    return any(len(s) == 6 and (s[:3] == base or s[3:] == quote) for s in symbols)
 
 
 def _unwrap(fields: dict[str, Any]) -> dict[str, str] | None:

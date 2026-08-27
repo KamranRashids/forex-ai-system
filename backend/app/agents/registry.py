@@ -29,11 +29,15 @@ class AgentRegistry:
 
 
 def default_registry() -> AgentRegistry:
-    """Technical + regime agents (Phase 3 scope)."""
+    """Technical/regime (P3) + fundamental/sentiment (P4) agents."""
+    from app.agents.fundamental import FundamentalAgent
     from app.agents.regime import RegimeAgent
+    from app.agents.sentiment import SentimentAgent
     from app.agents.technical import TechnicalAgent
 
     registry = AgentRegistry()
     registry.register(TechnicalAgent())
     registry.register(RegimeAgent())
+    registry.register(FundamentalAgent())
+    registry.register(SentimentAgent())
     return registry

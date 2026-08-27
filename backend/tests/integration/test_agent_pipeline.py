@@ -112,7 +112,7 @@ async def test_bar_event_persists_versioned_signals(db_sessionmaker: Any, fake_r
             .all()
         )
     by_agent = {r.agent_id: r for r in rows}
-    assert set(by_agent) == {"technical", "regime"}
+    assert set(by_agent) == {"technical", "regime", "fundamental", "sentiment"}
     tech = by_agent["technical"]
     assert tech.direction in ("LONG", "SHORT", "FLAT")
     assert tech.bucket_ts == last_bucket
@@ -213,7 +213,7 @@ async def test_signal_api_rbac_and_payload(
     )
     assert latest.status_code == 200
     body = latest.json()
-    assert {s["agent_id"] for s in body} == {"technical", "regime"}
+    assert {s["agent_id"] for s in body} == {"technical", "regime", "fundamental", "sentiment"}
     tech = next(s for s in body if s["agent_id"] == "technical")
     assert tech["direction"] in ("LONG", "SHORT", "FLAT")
     assert 0.0 <= tech["confidence"] <= 1.0

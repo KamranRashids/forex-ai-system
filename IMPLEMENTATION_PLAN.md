@@ -356,7 +356,7 @@ forex-ai-system/
 | `httpx`, `tenacity` | Provider/news/LLM calls with retry/backoff |
 | `websockets` | Consuming provider WS feeds |
 | `pydantic>=2`, `pydantic-settings` | Schemas + typed configuration |
-| `pandas`, `numpy`, `pandas-ta` | Candle frames + indicators |
+| `pandas`, `numpy` | Candle frames + indicators (indicator math is pure pandas/numpy; no TA-Lib/pandas-ta C extensions) |
 | `python-dateutil`, `tzdata` | Time/timeframe math (UTC everywhere) |
 | `apscheduler<4` | Scheduled jobs in workers |
 | `structlog` | Structured JSON logging |
@@ -621,8 +621,26 @@ Each phase ends with working, reviewed, tested software. Estimates assume one ex
 - **Exit criteria**: live synthetic-feed run shows persisted, versioned signals per closed bar with sub-second agent latency at M5.
 
 ### Phase 4 — Fundamental & Sentiment Agents (5–7 days)
-- Economic-calendar ingestion (importance-tagged events) + news fetch/dedup pipeline (hash/url)
-- `LLMClient` abstraction + OpenAI/Anthropic/Ollama adapters + **deterministic fallbacks** (calendar-proximity impact model; finance-lexicon sentiment) + daily-budget breaker
+
+**Phase 4 data-source decision (2026-08-27, resolved):**
+- **Economic Calendar** — primary provider **Finnhub Economic Calendar**; fallback **deterministic seeded/demo calendar**. Both behind a single provider interface/adapter.
+- **News** — primary provider **Finnhub News**; fallback **deterministic seeded/demo news**. Both behind a single provider interface/adapter.
+- **Governing requirements (all apply):**
+  1. App works fully with **zero external API keys**.
+  2. **Synthetic/demo data is the default** for development and tests.
+  3. Missing/invalid/rate-limited/unavailable **Finnhub credentials fall back gracefully** to deterministic/demo data where appropriate.
+  4. Provider-specific code stays isolated behind interfaces so another provider can be added later **without touching the agents**.
+  5. Normalized news/calendar events are **persisted with deduplication**.
+  6. **UTC timestamps** and **source/provider metadata** are maintained throughout.
+  7. Appropriate **configuration/environment variables** are added.
+  8. Fundamental and sentiment agents consume **normalized internal data only** — they never call Finnhub directly.
+  9. **SAFE MODE** is preserved; no live trading/order execution is introduced.
+  10. Existing architecture and Phases 0–3 remain intact.
+
+**Work items:**
+- News + economic-calendar ingestion pipelines behind `NewsProvider` / `CalendarProvider` interfaces: `finnhub_{news,calendar}` adapters + `synthetic_{news,calendar}` deterministic seeded/demo adapters (default).
+- Dedup pipeline (event UID; news url/hash) → persistence (migration `0004`).
+- `LLMClient` abstraction + **OpenCode Zen / Ox Alpha Free** adapter (ADR-0004) + **deterministic fallbacks** (calendar-proximity impact model; finance-lexicon sentiment) + daily-budget breaker
 - Fundamental agent: event-window risk states, surprise scoring (actual vs forecast), currency-strength narrative
 - Sentiment agent: per-headline scoring → rolling aggregate per currency/pair with decay
 - News blackout windows fed to orchestrator config; UI-ready payloads
@@ -705,6 +723,7 @@ Each phase ends with working, reviewed, tested software. Estimates assume one ex
 
 1. **Primary market-data provider** — OK to standardize on **OANDA v20 practice** (needs free practice account/token) with **Twelve Data** as alternate and `synthetic` for offline dev?
 2. **LLM provider** — preference among OpenAI / Anthropic / local Ollama (or “none, fallbacks only” to start)? Any monthly budget cap I should encode?
+   - **RESOLVED (2026-08-24):** `docs/adr/0004-llm-abstraction.md` → OpenCode Zen / Ox Alpha Free, `LLM_DAILY_BUDGET_USD` cap, deterministic fallbacks required.
 3. **Instrument universe** — start with majors `EURUSD, GBPUSD, USDJPY, AUDUSD, USDCHF, USDCAD, NZDUSD`?
 4. **Timeframes priority** — M5/M15/H1/H4/D1 as planned, or different emphasis?
 5. **Historical depth for backtests** — 2 years daily + 6 months intraday reasonable to start? (Provider limits apply; Dukascopy bulk import can be a later add-on.)

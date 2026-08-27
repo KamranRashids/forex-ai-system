@@ -87,6 +87,34 @@ class Settings(BaseSettings):
     provider_breaker_cooldown_seconds: int = Field(default=60, ge=1)
     staleness_poll_seconds: int = Field(default=30, ge=1)
 
+    # --- News & economic calendar (Phase 4) ---------------------------------------
+    #: news_provider/calendar_provider accept "synthetic" (default, zero-key,
+    #: deterministic demo data) or "finnhub" (requires FINNHUB_API_TOKEN).
+    news_provider: str = "synthetic"
+    calendar_provider: str = "synthetic"
+    finnhub_api_token: str = ""
+    #: How often the poller fetches + persists normalized news/calendar data.
+    news_poll_seconds: int = Field(default=300, ge=5)
+    calendar_poll_seconds: int = Field(default=3600, ge=60)
+    #: Look-back window (hours) requested from providers on each poll.
+    news_lookback_hours: int = Field(default=24, ge=1)
+    calendar_lookback_hours: int = Field(default=48, ge=1)
+    #: Composite dedup window enforced by persistence (replays are idempotent
+    #: regardless; this bounds un-hashed provider records).
+    news_dedup_days: int = Field(default=7, ge=1)
+    calendar_dedup_days: int = Field(default=7, ge=1)
+
+    # --- LLM (Phase 4; ADR-0004: OpenCode Zen / Ox Alpha Free) ----------------------
+    #: Abstraced behind LLMClient; agents NEVER call an LLM provider directly.
+    llm_provider: str = "none"  # "none" | "opencode_zen"
+    opencode_zen_api_key: str = ""
+    opencode_zen_model: str = "ox-alpha-free"
+    opencode_zen_base_url: str = "https://opencode.ai/api"
+    #: Hard daily cost ceiling (USD); the budget breaker stops calls once hit.
+    llm_daily_budget_usd: float = Field(default=0.0, ge=0.0)
+    llm_max_tokens: int = Field(default=512, ge=16)
+    llm_timeout_seconds: float = Field(default=30.0, gt=0.0)
+
     @field_validator("trading_mode", mode="before")
     @classmethod
     def _enforce_safe_mode(cls, value: object) -> str:
@@ -150,6 +178,24 @@ class Settings(BaseSettings):
             if len(symbol) != 6 or not symbol.isalpha():
                 raise ValueError(f"Invalid FX pair {symbol!r}; expected 6-letter form like EURUSD")
         return ",".join(symbols)
+
+    @field_validator("news_provider", "calendar_provider")
+    @classmethod
+    def _validate_content_provider(cls, value: str) -> str:
+        provider = value.strip().lower()
+        allowed = {"synthetic", "finnhub"}
+        if provider not in allowed:
+            raise ValueError(f"content provider must be one of {sorted(allowed)}; got {value!r}")
+        return provider
+
+    @field_validator("llm_provider")
+    @classmethod
+    def _validate_llm_provider(cls, value: str) -> str:
+        provider = value.strip().lower()
+        allowed = {"none", "opencode_zen"}
+        if provider not in allowed:
+            raise ValueError(f"LLM_PROVIDER must be one of {sorted(allowed)}; got {value!r}")
+        return provider
 
     @field_validator("oanda_env")
     @classmethod

@@ -1,4 +1,4 @@
-"""Provider construction from settings (ADR-0003)."""
+"""Provider construction from settings (ADR-0003; Phase 4 content providers)."""
 
 from __future__ import annotations
 
@@ -6,6 +6,11 @@ from datetime import datetime
 
 from app.core.config import Settings
 from app.data.providers.base import Candle, DataProvider, ProviderError
+from app.data.providers.content_base import CalendarProvider, NewsProvider
+from app.data.providers.content_factory import (
+    build_calendar_provider,
+    build_news_provider,
+)
 from app.data.providers.synthetic import synthetic_candles
 
 
@@ -33,3 +38,13 @@ def build_provider(settings: Settings) -> DataProvider:
 
         return OandaPracticeProvider.from_settings(settings)
     raise ProviderError(f"Unknown MARKET_DATA_PROVIDER {provider_name!r}")
+
+
+def build_calendar(settings: Settings) -> CalendarProvider:
+    """Configured economic-calendar provider; unkeyed Finnhub degrades to synthetic."""
+    return build_calendar_provider(settings)
+
+
+def build_news(settings: Settings) -> NewsProvider:
+    """Configured news provider; unkeyed Finnhub degrades to synthetic."""
+    return build_news_provider(settings)
