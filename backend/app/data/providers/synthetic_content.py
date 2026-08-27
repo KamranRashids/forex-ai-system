@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import struct
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 from app.data.content_types import NormalizedEconomicEvent, NormalizedNewsItem
 
@@ -50,7 +50,7 @@ def _hash_uniform(*parts: str) -> float:
 
 
 def _utc(ts: datetime) -> datetime:
-    return ts.astimezone()
+    return ts.astimezone(UTC)
 
 
 def _pct(

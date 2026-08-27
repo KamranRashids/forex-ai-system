@@ -142,7 +142,10 @@ async def test_content_worker_degrades_to_synthetic_on_failure(db_sessionmaker: 
             raise ContentProviderRateLimitError("boom")
 
     settings = Settings(secret_key="s" * 40)
-    now = datetime(2026, 8, 27, 12, 0, tzinfo=UTC)
+    # News lookback is 2h from `now`; `17:00Z` puts a synthesized headline
+    # (16:00Z, UTC-normalized) strictly inside [15:00Z, 17:00Z) so the degraded
+    # fallback must persist data regardless of the host's timezone.
+    now = datetime(2026, 8, 27, 17, 0, tzinfo=UTC)
 
     events_inserted = await _safe_calendar(db_sessionmaker, FailingCalendar(), settings, now)
     news_inserted = await _safe_news(
