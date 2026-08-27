@@ -42,6 +42,36 @@ AGENT_BARS_SKIPPED_STALE = Counter(
     "Backlog bars dropped by the latest-bar-per-pair policy",
 )
 
+# --- Orchestrator / decision pipeline (Phase 5) ---------------------------------
+ORCH_CYCLE_COUNT = Counter(
+    "orch_cycles_total",
+    "Orchestrator scan cycles executed",
+    ["outcome"],
+)
+ORCH_DECISIONS_TOTAL = Counter(
+    "orch_decisions_total",
+    "Decisions persisted per status",
+    ["status"],
+)
+ORCH_DECISIONS_REPLAYED = Counter(
+    "orch_decisions_replayed_total",
+    "Replay/redelivery attempts skipped as duplicates",
+)
+ORCH_DECISION_LATENCY = Histogram(
+    "orch_decision_latency_seconds",
+    "End-to-end time to build and persist one decision",
+    buckets=(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0),
+)
+RISK_BLOCKED_TOTAL = Counter(
+    "risk_blocked_total",
+    "Decision blocks attributable to each risk gate",
+    ["gate"],
+)
+RISK_PAPER_TOTAL = Counter(
+    "risk_paper_total",
+    "Paper intents emitted",
+)
+
 _UNMATCHED: str = "<unmatched>"
 
 

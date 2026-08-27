@@ -115,6 +115,45 @@ class Settings(BaseSettings):
     llm_max_tokens: int = Field(default=512, ge=16)
     llm_timeout_seconds: float = Field(default=30.0, gt=0.0)
 
+    # --- Orchestrator (Phase 5) ------------------------------------------------
+    #: Orchestrator loop cadence (ms).
+    orch_poll_ms: int = Field(default=200, ge=50)
+    #: Fraction of expected agents that must contribute a fresh vote; below
+    #: this the orchestrator must not emit actionable output (fail closed).
+    orch_min_agent_coverage: float = Field(default=0.5, ge=0.0, le=1.0)
+    #: Minimum weighted |score| to go LONG/SHORT (below -> FLAT / ANALYSIS).
+    orch_fusion_threshold: float = Field(default=0.15, ge=0.0, le=1.0)
+    #: Minimum agreement fraction to allow PAPER intent (else ANALYSIS).
+    orch_agreement_min: float = Field(default=0.5, ge=0.0, le=1.0)
+    #: Hysteresis band (score shift required to flip direction).
+    orch_hysteresis: float = Field(default=0.04, ge=0.0, le=1.0)
+    #: Per-pair cooldown between PAPER decisions (seconds).
+    orch_pair_cooldown_seconds: int = Field(default=1800, ge=0)
+
+    # --- Risk agent (Phase 5) ----------------------------------------------------
+    #: Max % of account equity risked per trade (0.01 = 1%).
+    risk_max_risk_pct_account: float = Field(default=0.01, gt=0.0, le=1.0)
+    #: Max aggregate open paper exposure fraction of account.
+    risk_max_exposure_pct: float = Field(default=0.30, gt=0.0, le=1.0)
+    #: Max daily realized loss fraction that stops new paper entries.
+    risk_max_daily_loss_pct: float = Field(default=0.03, gt=0.0, le=1.0)
+    #: Max drawdown fraction that stops new paper entries until recovery.
+    risk_max_drawdown_pct: float = Field(default=0.10, gt=0.0, le=1.0)
+    #: Minimum reward:risk required to accept a paper intent.
+    risk_min_rr: float = Field(default=1.5, gt=0.0)
+    #: Stop distance as a multiple of ATR(14).
+    risk_sl_atr_multiple: float = Field(default=1.5, gt=0.0)
+    #: Take-profit distance as a multiple of ATR(14).
+    risk_tp_atr_multiple: float = Field(default=2.5, gt=0.0)
+    #: Annualized volatility target (%) used to anchor position size.
+    risk_vol_target_pct: float = Field(default=0.20, gt=0.0)
+    #: Max exposure per correlated basket, as fraction of account.
+    risk_correlation_cap_pct: float = Field(default=0.15, gt=0.0, le=1.0)
+    #: Master switch for risk gating (off only for tests/diagnostics).
+    risk_enabled: bool = Field(default=True)
+    #: Notional account equity used for paper risk/sizing math.
+    risk_paper_equity: float = Field(default=100_000.0, gt=0.0)
+
     @field_validator("trading_mode", mode="before")
     @classmethod
     def _enforce_safe_mode(cls, value: object) -> str:

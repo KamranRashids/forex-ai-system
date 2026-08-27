@@ -47,6 +47,9 @@ TABLES: tuple[str, ...] = (
     "agent_signals",
     "news_items",
     "economic_events",
+    "decisions",
+    "risk_evaluations",
+    "risk_state",
 )
 
 

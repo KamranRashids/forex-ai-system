@@ -4,7 +4,8 @@ Roles:
 - ``ingest``      Phase 2 — market data pipeline (workers/ingest_worker.py)
 - ``agents``      Phase 3/4 — technical/regime/fundamental/sentiment analysis
 - ``content``     Phase 4 — news + economic-calendar ingestion (content_runtime.py)
-- ``orchestrator`` | ``executor`` — later phases; refuse to start
+- ``orchestrator`` Phase 5 — fuse signals + risk-gate into decisions/paper intents
+- ``executor``     later phase; refuse to start
 """
 
 from __future__ import annotations
@@ -49,6 +50,10 @@ def main() -> None:
         from app.workers.content_runtime import run_content_worker
 
         coroutine = run_content_worker(settings)
+    elif role == "orchestrator":
+        from app.workers.orchestrator_runtime import run_orchestrator
+
+        coroutine = run_orchestrator(settings)
     else:
         _logger().error("worker_role_not_available_yet", role=role, arrives_in="Phase 5+")
         raise SystemExit(2)

@@ -103,6 +103,13 @@ omit = [
     "app/data/market_config.py",
     "app/data/providers/factory.py",
     "app/data/signal_repository.py",
+    # Phase 5 DB-I/O shells: PG-specific (pg_insert) orchestration verified
+    # behaviorally by the integration suite; the safety-critical pure logic in
+    # app/decisions/{fusion,risk,hashing}.py and engine.compute_decision IS
+    # unit-tested directly (engine's async wrapper is the omitted shell).
+    "app/data/decision_repository.py",
+    "app/data/risk_config.py",
+    "app/decisions/engine.py",
     "app/bus/publisher.py",
     "app/monitor/staleness.py",
     "app/workers/*",

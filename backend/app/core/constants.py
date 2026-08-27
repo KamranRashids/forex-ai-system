@@ -30,3 +30,5 @@ class AuditActions:
     USER_UPDATED = "admin.user_updated"
     MARKET_CONFIG_UPDATED = "admin.market_config_updated"
     BACKFILL_TRIGGERED = "admin.backfill_triggered"
+    RISK_PARAMS_UPDATED = "admin.risk_params_updated"
+    DECISION_REPLAY_TRIGGERED = "admin.decision_replay_triggered"

@@ -13,6 +13,8 @@ from pydantic import BaseModel, Field
 from redis.asyncio import Redis
 
 from app.api.deps import AdminUser, DBSession, SettingsDep, client_ip
+from app.bus.events import Event
+from app.bus.topics import SIGNALS_STREAM, STREAM_MAXLEN_APPROX
 from app.core.constants import AuditActions
 from app.core.errors import InvalidInputError
 from app.data.market_config import (
@@ -57,6 +59,17 @@ class BackfillAccepted(BaseModel):
     queued_jobs: int
     start: datetime
     end: datetime
+
+
+class DecisionReplayRequest(BaseModel):
+    symbol: str = Field(min_length=6, max_length=12)
+    timeframe: str = Field(pattern="^(M5|M15|H1|H4|D1)$")
+
+
+class DecisionReplayAccepted(BaseModel):
+    detail: str
+    symbol: str
+    timeframe: str
 
 
 @router.get("/market-config")
@@ -145,6 +158,54 @@ async def trigger_backfill(
         queued_jobs=1,
         start=body.start,
         end=body.end,
+    )
+
+
+@router.post("/decisions/replay", status_code=202)
+async def replay_decision(
+    body: DecisionReplayRequest,
+    request: Request,
+    session: DBSession,
+    redis: RedisDep,
+    admin: AdminUser,
+) -> DecisionReplayAccepted:
+    """Ask the orchestrator to re-scan a pair (published as a trigger event).
+
+    The orchestrator re-reads the persisted agent signals (DB is the source of
+    truth), so a replayed trigger is idempotent: a fresh decision for the same
+    (symbol, timeframe, bucket) is a no-op.
+    """
+    from datetime import UTC, datetime
+
+    symbol = body.symbol.strip().upper()
+    timeframe = body.timeframe.strip().upper()
+    event = Event(
+        event_type="signal.emitted",
+        payload={"agent_id": "replay", "symbol": symbol, "timeframe": timeframe},
+        producer="admin",
+        produced_at=datetime.now(UTC),
+    )
+    await cast(
+        "Awaitable[Any]",
+        redis.xadd(
+            SIGNALS_STREAM, {"data": event.to_json()}, maxlen=STREAM_MAXLEN_APPROX, approximate=True
+        ),
+    )
+    session.add(
+        AuditLog(
+            actor=admin.email,
+            action=AuditActions.DECISION_REPLAY_TRIGGERED,
+            entity_type="decision",
+            entity_id=f"{symbol}|{timeframe}",
+            after={"symbol": symbol, "timeframe": timeframe},
+            ip_address=client_ip(request),
+        )
+    )
+    await session.commit()
+    return DecisionReplayAccepted(
+        detail="Replay trigger published; the orchestrator will re-scan the pair.",
+        symbol=symbol,
+        timeframe=timeframe,
     )
 
 
