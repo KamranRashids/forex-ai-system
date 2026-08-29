@@ -8,6 +8,7 @@ endpoint so operators and the UI can assert the process is in paper-only mode.
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from pathlib import Path
 from typing import Annotated
@@ -18,12 +19,27 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import DBSession, SettingsDep
+from app.bus.topics import STALENESS_LATEST_KEY
 from app.core.config import Settings
 from app.core.constants import APP_NAME, APP_VERSION, SAFE_TRADING_MODE
 from app.core.errors import ServiceUnavailableError
+from app.core.metrics import (
+    STALENESS_BREACH_COUNT,
+    STALENESS_MAX_AGE_SECONDS,
+    WORKER_HEARTBEAT_AGE_SECONDS,
+    WORKER_UP,
+)
 from app.core.security import utcnow
 from app.db.session import get_redis
-from app.schemas.common import ComponentStatus, SystemStatusOut
+from app.monitor.heartbeat import (
+    WORKER_ROLES,
+    read_worker_health,
+)
+from app.schemas.common import (
+    ComponentStatus,
+    SystemStatusOut,
+    WorkerHealthOut,
+)
 
 router = APIRouter(tags=["system"])
 
@@ -133,6 +149,46 @@ async def health_ready(
     return {"status": "ok", "mode": settings.trading_mode}
 
 
+async def _collect_workers(redis: object, ttl_seconds: int) -> dict[str, WorkerHealthOut]:
+    """Read live worker heartbeats into a role -> WorkerHealthOut mapping."""
+    now = utcnow()
+    results: dict[str, WorkerHealthOut] = {}
+    for health in await read_worker_health(
+        redis, roles=WORKER_ROLES, now=now, ttl_seconds=ttl_seconds
+    ):
+        results[health.role] = WorkerHealthOut(
+            status=health.status,
+            last_seen=health.last_seen,
+            started_at=health.started_at,
+            age_seconds=health.age_seconds,
+            ttl_seconds=health.ttl_seconds,
+        )
+    return results
+
+
+async def _refresh_runtime_gauges(redis: object, ttl_seconds: int) -> None:
+    """Recompute worker + staleness Prometheus gauges from Redis (called on /metrics)."""
+    now = utcnow()
+    for health in await read_worker_health(
+        redis, roles=WORKER_ROLES, now=now, ttl_seconds=ttl_seconds
+    ):
+        WORKER_UP.labels(role=health.role).set(1 if health.status == "up" else 0)
+        if health.age_seconds is not None:
+            WORKER_HEARTBEAT_AGE_SECONDS.labels(role=health.role).set(health.age_seconds)
+    try:
+        raw = await redis.get(STALENESS_LATEST_KEY)  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001 - metrics refresh must not fail the scrape
+        raw = None
+    if raw:
+        try:
+            latest = json.loads(raw)
+            STALENESS_BREACH_COUNT.set(int(latest.get("breached", 0)))
+            STALENESS_MAX_AGE_SECONDS.set(float(latest.get("max_age_seconds", 0)))
+        except (ValueError, TypeError):  # noqa: BLE001 - ignore malformed state
+            STALENESS_BREACH_COUNT.set(0)
+            STALENESS_MAX_AGE_SECONDS.set(0)
+
+
 @router.get("/system/status")
 async def system_status(
     session: DBSession,
@@ -141,6 +197,7 @@ async def system_status(
 ) -> SystemStatusOut:
     """Component matrix for dashboards; informational (always HTTP 200)."""
     components = await collect_status(session, redis, settings)
+    workers = await _collect_workers(redis, settings.heartbeat_ttl_seconds)
     return SystemStatusOut(
         name=APP_NAME,
         version=APP_VERSION,
@@ -149,10 +206,15 @@ async def system_status(
         safe_mode=components["safe_mode"].ok,
         time_utc=utcnow(),
         components=components,
+        workers=workers,
     )
 
 
 @router.get("/metrics", include_in_schema=False)
-async def metrics() -> Response:
-    """Prometheus scrape endpoint."""
+async def metrics(
+    redis: Annotated[object, Depends(get_redis)],
+    settings: SettingsDep,
+) -> Response:
+    """Prometheus scrape endpoint (refreshes worker/staleness gauges live)."""
+    await _refresh_runtime_gauges(redis, settings.heartbeat_ttl_seconds)
     return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)

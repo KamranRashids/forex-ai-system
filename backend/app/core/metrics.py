@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 
-from prometheus_client import Counter, Histogram
+from prometheus_client import Counter, Gauge, Histogram
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
@@ -70,6 +70,29 @@ RISK_BLOCKED_TOTAL = Counter(
 RISK_PAPER_TOTAL = Counter(
     "risk_paper_total",
     "Paper intents emitted",
+)
+
+# --- Runtime / worker observability (Phase 7) ---------------------------------
+# These gauges are recomputed by the API's /metrics handler from Redis heartbeat
+# and staleness keys (workers are separate processes, so they cannot increment
+# process-local metrics here). See app/api/v1/system.py.
+WORKER_UP = Gauge(
+    "worker_up",
+    "1 when the worker heartbeat is fresh, 0 otherwise (role label)",
+    ["role"],
+)
+WORKER_HEARTBEAT_AGE_SECONDS = Gauge(
+    "worker_heartbeat_age_seconds",
+    "Seconds since the worker's last heartbeat",
+    ["role"],
+)
+STALENESS_BREACH_COUNT = Gauge(
+    "staleness_breach_count",
+    "Number of stale (symbol, timeframe) series at last ingest check",
+)
+STALENESS_MAX_AGE_SECONDS = Gauge(
+    "staleness_max_age_seconds",
+    "Oldest staleness gap (seconds) observed at last ingest check",
 )
 
 _UNMATCHED: str = "<unmatched>"

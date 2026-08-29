@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import timedelta
 from typing import Any
 
@@ -10,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.bus.publisher import RedisEventPublisher
 from app.core.config import Settings, get_settings
+from app.core.shutdown import ShutdownCoordinator
 from app.data.ingest import IngestService
 from app.db.session import get_redis_client, get_sessionmaker
 
@@ -20,6 +22,10 @@ async def run_ingest_worker(settings: Settings | None = None) -> None:
     """Drive the market-data ingestion loop until cancelled."""
     from app.data.market_config import get_market_config
     from app.data.providers.factory import build_provider
+    from app.monitor.heartbeat import (
+        WorkerHeartbeat,
+        heartbeat_ttl_for_loop,
+    )
     from app.monitor.staleness import StalenessMonitor
 
     resolved = settings or get_settings()
@@ -42,6 +48,14 @@ async def run_ingest_worker(settings: Settings | None = None) -> None:
     instruments_by_symbol = dict(seeded)
 
     monitor = StalenessMonitor(session_factory=session_factory, publisher=publisher)
+    heartbeat = WorkerHeartbeat(
+        redis,
+        "ingest",
+        ttl_seconds=heartbeat_ttl_for_loop(
+            resolved.ingest_interval_seconds, min_ttl_seconds=resolved.heartbeat_ttl_seconds
+        ),
+    )
+    shutdown = ShutdownCoordinator()
 
     logger.warning(
         "SAFE MODE ACTIVE: paper trading only. Live order execution is not implemented anywhere.",
@@ -55,43 +69,50 @@ async def run_ingest_worker(settings: Settings | None = None) -> None:
     staleness_every = max(1, resolved.staleness_poll_seconds // resolved.ingest_interval_seconds)
     iteration = 0
 
-    while True:
-        # Runtime-tunable universe (admin overrides) reread every cycle.
-        async with session_factory() as session:
-            symbols, timeframes = await get_market_config(session, resolved)
-        new_symbols = [s for s in symbols if s not in instruments_by_symbol]
-        if new_symbols:
+    try:
+        while not shutdown.should_stop:
+            await heartbeat.touch()
+            # Runtime-tunable universe (admin overrides) reread every cycle.
             async with session_factory() as session:
-                newly = await seed_instruments(session, new_symbols)
-                await session.commit()
-            instruments_by_symbol.update(newly)
-        instruments = [instruments_by_symbol[s] for s in symbols if s in instruments_by_symbol]
+                symbols, timeframes = await get_market_config(session, resolved)
+            new_symbols = [s for s in symbols if s not in instruments_by_symbol]
+            if new_symbols:
+                async with session_factory() as session:
+                    newly = await seed_instruments(session, new_symbols)
+                    await session.commit()
+                instruments_by_symbol.update(newly)
+            instruments = [instruments_by_symbol[s] for s in symbols if s in instruments_by_symbol]
 
-        cycle_start = service.now
-        result = await service.run_cycle(instruments, timeframes)
-        logger.info(
-            "ingest_cycle",
-            inserted=result.inserted,
-            updated=sum(r.updated for r in result.results),
-            gaps=sum(r.gaps_detected for r in result.results),
-            up_to_date=len(result.up_to_date),
-            breaker_skipped=len(result.skipped_breaker),
-            failed=len(result.failed),
-            first_failure=(result.failed[0].skipped_reason if result.failed else None),
-        )
-        await service.persist_breaker_snapshot()
+            cycle_start = service.now
+            result = await service.run_cycle(instruments, timeframes)
+            logger.info(
+                "ingest_cycle",
+                inserted=result.inserted,
+                updated=sum(r.updated for r in result.results),
+                gaps=sum(r.gaps_detected for r in result.results),
+                up_to_date=len(result.up_to_date),
+                breaker_skipped=len(result.skipped_breaker),
+                failed=len(result.failed),
+                first_failure=(result.failed[0].skipped_reason if result.failed else None),
+            )
+            await service.persist_breaker_snapshot()
 
-        iteration += 1
-        if iteration % staleness_every == 0:
-            findings = await monitor.check(instruments, timeframes, now=service.now)
-            breached = sum(1 for f in findings if f.breached)
-            if breached:
-                logger.warning("staleness_check_breaches", count=breached)
+            iteration += 1
+            if iteration % staleness_every == 0:
+                findings = await monitor.check(instruments, timeframes, now=service.now)
+                breached = sum(1 for f in findings if f.breached)
+                if breached:
+                    logger.warning("staleness_check_breaches", count=breached)
+                await _publish_staleness_latest(redis, findings, breached)
 
-        await drain_backfills(service, redis, session_factory, instruments_by_symbol)
+            await drain_backfills(service, redis, session_factory, instruments_by_symbol)
 
-        elapsed = (service.now - cycle_start).total_seconds()
-        await asyncio_sleep(max(0.5, interval.total_seconds() - elapsed))
+            elapsed = (service.now - cycle_start).total_seconds()
+            await asyncio_sleep(max(0.5, interval.total_seconds() - elapsed))
+    finally:
+        await heartbeat.clear()
+        shutdown.close()
+        await provider.aclose()
 
 
 async def seed_instruments(session: Any, symbols: list[str]) -> dict[str, Any]:
@@ -142,3 +163,22 @@ async def asyncio_sleep(seconds: float) -> None:  # pragma: no cover - thin alia
     import asyncio
 
     await asyncio.sleep(seconds)
+
+
+async def _publish_staleness_latest(redis: Any, findings: list[Any], breached: int) -> None:
+    """Write the current staleness picture to Redis for API Prometheus gauges."""
+    from app.bus.topics import STALENESS_LATEST_KEY
+
+    payload = {
+        "breached": breached,
+        "checked": len(findings),
+        "max_age_seconds": max(
+            (f.age_seconds for f in findings if f.age_seconds is not None),
+            default=0,
+        ),
+        "timeframes": sorted({f.timeframe for f in findings}),
+    }
+    try:
+        await redis.set(STALENESS_LATEST_KEY, json.dumps(payload))
+    except Exception:  # noqa: BLE001 - monitoring must never break ingestion
+        logger.debug("staleness_latest_write_failed")

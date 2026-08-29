@@ -31,3 +31,15 @@ def orchestrator_lock_key() -> str:
 
 def latest_price_key(symbol: str) -> str:
     return f"prices.latest:{symbol}"
+
+
+def worker_heartbeat_key(role: str) -> str:
+    """Redis key holding a worker's live heartbeat hash (Phase 7)."""
+    return f"worker:heartbeat:{role}"
+
+
+#: Redis key whose value is the latest staleness findings (JSON) written by the
+#: ingest worker each cycle so the API can expose Prometheus gauges.
+STALENESS_LATEST_KEY: str = "monitor:staleness:latest"
+#: Redis counter of alert events published (used for the Prometheus gauge).
+ALERTS_TOTAL_KEY: str = "monitor:alerts:total"

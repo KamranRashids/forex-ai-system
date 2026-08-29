@@ -87,6 +87,12 @@ class Settings(BaseSettings):
     provider_breaker_cooldown_seconds: int = Field(default=60, ge=1)
     staleness_poll_seconds: int = Field(default=30, ge=1)
 
+    # --- Monitoring / runtime hardening (Phase 7) ----------------------------------
+    #: TTL (sec) applied to worker heartbeat keys; a worker is "stale"/"down"
+    #: once its last heartbeat is older than this (used by /system/status and
+    #: the Prometheus worker gauges).
+    heartbeat_ttl_seconds: int = Field(default=60, ge=5)
+
     # --- News & economic calendar (Phase 4) ---------------------------------------
     #: news_provider/calendar_provider accept "synthetic" (default, zero-key,
     #: deterministic demo data) or "finnhub" (requires FINNHUB_API_TOKEN).

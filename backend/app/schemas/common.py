@@ -13,6 +13,14 @@ class ComponentStatus(BaseModel):
     detail: str | None = None
 
 
+class WorkerHealthOut(BaseModel):
+    status: str
+    last_seen: datetime | None = None
+    started_at: datetime | None = None
+    age_seconds: float | None = None
+    ttl_seconds: int
+
+
 class SystemStatusOut(BaseModel):
     name: str
     version: str
@@ -21,3 +29,4 @@ class SystemStatusOut(BaseModel):
     safe_mode: bool
     time_utc: datetime
     components: dict[str, ComponentStatus]
+    workers: dict[str, WorkerHealthOut]

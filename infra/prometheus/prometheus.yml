@@ -1,0 +1,18 @@
+# ============================================================================
+# Forex AI System — Prometheus scrape configuration (Phase 7)
+# Scrapes the API's /metrics endpoint, which live-computes worker heartbeat
+# and staleness gauges from Redis. No authentication is required for /metrics
+# in the dev stack; the endpoint is excluded from OpenAPI schema.
+# ============================================================================
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: forex-ai-api
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["api:8000"]
+        labels:
+          service: forex-ai-api

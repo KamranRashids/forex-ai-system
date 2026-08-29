@@ -81,7 +81,10 @@ services:
       target: dev
     restart: unless-stopped
     command:
-      sh -c "alembic upgrade head && python -m app.worker_main"
+      # `exec` replaces the shell so python becomes PID 1 and receives the
+      # container's SIGTERM directly, letting graceful shutdown (heartbeat
+      # clear) run instead of a hard kill when Docker stops the worker.
+      sh -c "alembic upgrade head && exec python -m app.worker_main"
     environment:
       APP_ENV: ${APP_ENV:-dev}
       TRADING_MODE: ${TRADING_MODE:-safe}
@@ -121,7 +124,7 @@ services:
       target: dev
     restart: unless-stopped
     command:
-      sh -c "alembic upgrade head && python -m app.worker_main"
+      sh -c "alembic upgrade head && exec python -m app.worker_main"
     environment:
       APP_ENV: ${APP_ENV:-dev}
       TRADING_MODE: ${TRADING_MODE:-safe}
@@ -141,6 +144,75 @@ services:
       redis:
         condition: service_healthy
       worker-ingest:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'app.worker_main' >/dev/null"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 20s
+
+  worker-content:
+    build:
+      context: ./backend
+      target: dev
+    restart: unless-stopped
+    command:
+      sh -c "alembic upgrade head && exec python -m app.worker_main"
+    environment:
+      APP_ENV: ${APP_ENV:-dev}
+      TRADING_MODE: ${TRADING_MODE:-safe}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      SECRET_KEY: ${SECRET_KEY:-dev-only-insecure-secret-key-change-me-0123456789abcdef}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-forex}:${POSTGRES_PASSWORD:-forex_dev_password}@postgres:5432/${POSTGRES_DB:-forex_ai}
+      REDIS_URL: redis://redis:6379/0
+      WORKER_ROLE: content
+      NEWS_PROVIDER: ${NEWS_PROVIDER:-synthetic}
+      CALENDAR_PROVIDER: ${CALENDAR_PROVIDER:-synthetic}
+    volumes:
+      - ./backend/app:/app/app
+      - ./backend/migrations:/app/migrations
+      - ./backend/alembic.ini:/app/alembic.ini:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f 'app.worker_main' >/dev/null"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 20s
+
+  worker-orchestrator:
+    build:
+      context: ./backend
+      target: dev
+    restart: unless-stopped
+    command:
+      sh -c "alembic upgrade head && exec python -m app.worker_main"
+    environment:
+      APP_ENV: ${APP_ENV:-dev}
+      TRADING_MODE: ${TRADING_MODE:-safe}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      SECRET_KEY: ${SECRET_KEY:-dev-only-insecure-secret-key-change-me-0123456789abcdef}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-forex}:${POSTGRES_PASSWORD:-forex_dev_password}@postgres:5432/${POSTGRES_DB:-forex_ai}
+      REDIS_URL: redis://redis:6379/0
+      WORKER_ROLE: orchestrator
+      MARKET_DATA_SYMBOLS: ${MARKET_DATA_SYMBOLS:-EURUSD,GBPUSD,USDJPY,AUDUSD,USDCAD,USDCHF,NZDUSD}
+      MARKET_DATA_TIMEFRAMES: ${MARKET_DATA_TIMEFRAMES:-M15,H1,H4}
+      ORCH_POLL_MS: ${ORCH_POLL_MS:-200}
+    volumes:
+      - ./backend/app:/app/app
+      - ./backend/migrations:/app/migrations
+      - ./backend/alembic.ini:/app/alembic.ini:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      worker-agents:
         condition: service_started
     healthcheck:
       test: ["CMD-SHELL", "pgrep -f 'app.worker_main' >/dev/null"]
@@ -176,6 +248,55 @@ services:
       retries: 18
       start_period: 40s
 
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=${PROM_RETENTION:-7d}
+    ports:
+      - "${PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - promdata:/prometheus
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9090/-/healthy >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  grafana:
+    image: grafana/grafana:11.1.1
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_USERS_DEFAULT_THEME: dark
+    ports:
+      - "${GRAFANA_PORT:-3001}:3000"
+    volumes:
+      - ./infra/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafanadata:/var/lib/grafana
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/api/health >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+
 volumes:
   pgdata:
   redisdata:
+  promdata:
+  grafanadata:

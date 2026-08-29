@@ -23,11 +23,13 @@ import structlog
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.core.config import Settings, get_settings
+from app.core.shutdown import ShutdownCoordinator
 from app.data.content_repository import save_events, save_news
 from app.data.content_types import NormalizedEconomicEvent, NormalizedNewsItem
 from app.data.providers.content_base import ContentProviderError
 from app.data.providers.factory import build_calendar, build_news
-from app.db.session import get_sessionmaker
+from app.db.session import get_redis_client, get_sessionmaker
+from app.monitor.heartbeat import WorkerHeartbeat, heartbeat_ttl_for_loop
 
 logger = structlog.stdlib.get_logger(__name__)
 
@@ -37,8 +39,19 @@ async def run_content_worker(settings: Settings | None = None) -> None:
 
     resolved = settings or get_settings()
     session_factory: async_sessionmaker[AsyncSession] = get_sessionmaker()
+    redis = get_redis_client()
     calendar = build_calendar(resolved)
     news = build_news(resolved)
+
+    heartbeat = WorkerHeartbeat(
+        redis,
+        "content",
+        ttl_seconds=heartbeat_ttl_for_loop(
+            min(resolved.news_poll_seconds, resolved.calendar_poll_seconds),
+            min_ttl_seconds=resolved.heartbeat_ttl_seconds,
+        ),
+    )
+    shutdown = ShutdownCoordinator()
 
     logger.warning(
         "SAFE MODE ACTIVE: paper trading only. Live order execution is not implemented anywhere.",
@@ -48,10 +61,13 @@ async def run_content_worker(settings: Settings | None = None) -> None:
     )
 
     try:
-        while True:
+        while not shutdown.should_stop:
+            await heartbeat.touch()
             await _cycle(session_factory, resolved, calendar, news)
             await _sleep(min(resolved.news_poll_seconds, resolved.calendar_poll_seconds))
     finally:
+        await heartbeat.clear()
+        shutdown.close()
         await calendar.aclose()
         await news.aclose()
 

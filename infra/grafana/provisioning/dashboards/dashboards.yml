@@ -1,0 +1,13 @@
+# Grafana dashboard provider (Phase 7): auto-loads dashboards from this folder.
+apiVersion: 1
+
+providers:
+  - name: forex-ai
+    orgId: 1
+    folder: "Forex AI"
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /var/lib/grafana/dashboards

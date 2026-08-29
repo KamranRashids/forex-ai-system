@@ -18,6 +18,7 @@ There is no broker, order, or execution capability anywhere in this worker.
 from __future__ import annotations
 
 import time
+import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -79,6 +80,7 @@ class OrchestratorWorker:
         publisher: EventPublisher,
         settings: Settings | None = None,
         now: datetime | None = None,
+        lock_ttl_seconds: int = LOCK_TTL_SECONDS,
     ) -> None:
         self._sessions = session_factory
         self._redis = redis
@@ -86,11 +88,78 @@ class OrchestratorWorker:
         self._settings = settings or get_settings()
         self._now = now or datetime.now(UTC)
         self._engine_cls = DecisionEngine
+        self._lock_ttl = max(1, int(lock_ttl_seconds))
+        self._owner_token: str = ""
+
+    @property
+    def lock_ttl(self) -> int:
+        """Lease duration (seconds) this orchestrator renews its lock for."""
+        return self._lock_ttl
 
     async def acquire_lock(self) -> bool:
-        """Try to become the active orchestrator. False => another already is."""
-        result = await self._redis.set(orchestrator_lock_key(), "1", nx=True, ex=LOCK_TTL_SECONDS)
-        return bool(result)
+        """Try to become the active orchestrator (single-owner, fail closed).
+
+        A unique owner token is stored with the lock. Only the holder that can
+        prove ownership (``GET key == token``) may renew or release; this
+        guarantees two orchestrators can never both believe they own the lock.
+        Returns False when another orchestrator already holds the lock.
+        """
+        self._owner_token = uuid.uuid4().hex
+        acquired = await self._redis.set(
+            orchestrator_lock_key(),
+            self._owner_token,
+            nx=True,
+            ex=self._lock_ttl,
+        )
+        return bool(acquired)
+
+    async def renew_lock(self) -> bool:
+        """Refresh the lock TTL iff we still own it (token-guarded).
+
+        Uses a WATCH/MULTI/EXEC transaction so the expiry only happens when the
+        key still holds our owner token. Returns True when ownership was
+        confirmed and extended; False (fail closed) when the key is gone or held
+        by another token — the caller MUST stop processing immediately.
+        """
+        if not self._owner_token:
+            return False
+        key = orchestrator_lock_key()
+        try:
+            async with self._redis.pipeline(transaction=True) as pipe:
+                await pipe.watch(key)
+                current = await pipe.get(key)
+                if current != self._owner_token:
+                    await pipe.unwatch()  # type: ignore[no-untyped-call]
+                    return False
+                pipe.multi()  # type: ignore[no-untyped-call]
+                pipe.pexpire(key, self._lock_ttl * 1000)
+                await pipe.execute()
+        except Exception as exc:  # noqa: BLE001 - cannot confirm ownership
+            logger.exception("orchestrator_lock_renew_failed", error=str(exc))
+            return False
+        return True
+
+    async def release_lock(self) -> None:
+        """Release the lock iff we still own it (graceful shutdown).
+
+        Token-guarded — never deletes a lock we no longer own (e.g. another
+        instance took over after our TTL expired).
+        """
+        if not self._owner_token:
+            return
+        key = orchestrator_lock_key()
+        try:
+            async with self._redis.pipeline(transaction=True) as pipe:
+                await pipe.watch(key)
+                current = await pipe.get(key)
+                if current != self._owner_token:
+                    await pipe.unwatch()  # type: ignore[no-untyped-call]
+                    return
+                pipe.multi()  # type: ignore[no-untyped-call]
+                pipe.delete(key)
+                await pipe.execute()
+        except Exception:  # noqa: BLE001 - cleanup must not raise
+            logger.debug("orchestrator_lock_release_failed")
 
     async def ensure_groups(self) -> None:
         try:
