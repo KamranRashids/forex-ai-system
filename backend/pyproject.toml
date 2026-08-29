@@ -114,6 +114,12 @@ omit = [
     "app/monitor/staleness.py",
     "app/workers/*",
     "app/worker_main.py",
+    # Phase 6 async I/O shells: backtest persistence (repository) and the
+    # session-factory orchestration (service) are verified behaviorally by the
+    # integration suite; the pure sync core (broker, driver, agent_runner,
+    # orchestrator_sim, report, models) is unit-tested against the gate.
+    "app/backtest/repository.py",
+    "app/backtest/service.py",
 ]
 
 [tool.coverage.report]

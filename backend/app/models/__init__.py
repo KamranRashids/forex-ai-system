@@ -1,7 +1,13 @@
-"""SQLAlchemy models (P1-2 id/data; P3 signals; P4 content; P5 decisions/risk)."""
+"""SQLAlchemy models (P1-2 id/data; P3 signals; P4 content; P5 decisions/risk; P6 backtest)."""
 
 from app.models.agent_signal import AgentSignalRow
 from app.models.audit_log import AuditLog
+from app.models.backtest import (
+    BacktestEquityRow,
+    BacktestRunRow,
+    BacktestStatus,
+    BacktestTradeRow,
+)
 from app.models.candle import CandleRow
 from app.models.decision import DecisionDirection, DecisionRow, DecisionStatus
 from app.models.economic_event import EconomicEvent
@@ -17,6 +23,10 @@ from app.models.user import User, UserRole
 __all__ = [
     "AgentSignalRow",
     "AuditLog",
+    "BacktestEquityRow",
+    "BacktestRunRow",
+    "BacktestStatus",
+    "BacktestTradeRow",
     "CandleRow",
     "DecisionDirection",
     "DecisionRow",
