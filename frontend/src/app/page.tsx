@@ -1,3 +1,5 @@
+import Link from "next/link";
+
 const apiUrl = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
 export default function Home() {
@@ -12,10 +14,25 @@ export default function Home() {
         <p className="mt-3 text-slate-400">Multi-agent Forex analysis platform</p>
       </div>
 
+      <nav className="flex items-center gap-4">
+        <Link
+          href="/alerts"
+          className="rounded-lg border border-slate-700 bg-slate-800/60 px-4 py-2 text-sm font-semibold text-slate-200 transition-colors hover:border-slate-500 hover:text-white"
+        >
+          Live Alerts
+        </Link>
+        <Link
+          href="/login"
+          className="rounded-lg border border-slate-700 bg-slate-800/60 px-4 py-2 text-sm font-semibold text-slate-200 transition-colors hover:border-slate-500 hover:text-white"
+        >
+          Sign in
+        </Link>
+      </nav>
+
       <p className="max-w-xl text-center text-sm leading-relaxed text-slate-500">
-        This dashboard is a Phase&nbsp;0 scaffold placeholder. No market data, agents, or
-        trading features are wired up yet. Live order execution does not exist anywhere in
-        this system — the backend refuses to start in any mode other than{" "}
+        The live alerts dashboard shows system alerts in real time via an authenticated
+        WebSocket stream. Live order execution does not exist anywhere in this system — the
+        backend refuses to start in any mode other than{" "}
         <code className="rounded bg-slate-800 px-1.5 py-0.5 text-slate-300">safe</code>.
       </p>
 
@@ -23,7 +40,7 @@ export default function Home() {
         <dt className="font-medium text-slate-300">API</dt>
         <dd className="text-slate-400">{apiUrl}</dd>
         <dt className="font-medium text-slate-300">Status</dt>
-        <dd className="text-slate-400">Phase 0 — foundation scaffold</dd>
+        <dd className="text-slate-400">Phase 8 — authenticated alerts live view</dd>
         <dt className="font-medium text-slate-300">Trading mode</dt>
         <dd className="text-amber-300">paper / safe</dd>
       </dl>

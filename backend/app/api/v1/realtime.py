@@ -21,6 +21,7 @@ from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 from redis.asyncio import Redis
 
+from app.alerts.translate import digest_event_id
 from app.api.deps import CurrentUser
 from app.core.config import get_settings
 from app.core.constants import API_V1_PREFIX
@@ -77,10 +78,18 @@ async def create_ws_ticket(user: CurrentUser, redis: RedisDep) -> TicketOut:
 
 
 def _event_frame(topic: str, event: Any) -> dict[str, Any]:
-    """Build a server->client frame for one event."""
+    """Build a server->client frame for one event.
+
+    The frame's ``data`` is the event payload enriched with ``event_type``,
+    ``produced_at`` and the canonical durable ``event_id`` (from the same digest
+    the alerts worker uses when persisting ``alert_events``), so clients can key
+    live events identically to the REST ``AlertOut.event_id`` without risking
+    collisions between distinct events.
+    """
     payload = dict(getattr(event, "payload", {}) or {})
     payload.setdefault("event_type", getattr(event, "event_type", "unknown"))
     payload.setdefault("produced_at", getattr(event, "produced_at", None))
+    payload.setdefault("event_id", digest_event_id(event))
     if hasattr(event, "produced_at") and event.produced_at is not None:
         with suppress(Exception):  # noqa: BLE001 - keep the frame robust
             payload["produced_at"] = event.produced_at.isoformat()

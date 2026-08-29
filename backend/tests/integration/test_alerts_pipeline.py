@@ -189,6 +189,10 @@ async def test_ws_stream_requires_ticket_and_delivers_alert(
         assert frame["type"] == "event"
         assert frame["topic"] == "alerts"
         assert frame["data"]["symbol"] == "GBPUSD"
+        # The live identity equals the durable persisted identity.
+        from app.alerts.translate import digest_event_id
+
+        assert frame["data"]["event_id"] == digest_event_id(event)
 
 
 @pytest.mark.asyncio

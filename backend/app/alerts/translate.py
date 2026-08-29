@@ -34,12 +34,17 @@ def _truncate(value: str, length: int = _TITLE_MAX) -> str:
     return value if len(value) <= length else value[: length - 1] + "…"
 
 
-def _digest(event: Event) -> str:
-    """Stable, collision-safe event identity used for idempotent persistence.
+def digest_event_id(event: Event) -> str:
+    """Canonical, collision-safe identity for an alert event.
 
     Prefers a caller-supplied ``event_id`` in the payload; otherwise derives a
     hash from the event type + producer + timestamp so duplicate redeliveries
     of the same underlying occurrence map to one row.
+
+    This is the **single source of truth** for the durable (persisted) alert
+    identity. It is used both when persisting ``alert_events.event_id`` and when
+    enriching the live WebSocket frame (see ``app/api/v1/realtime.py``), so the
+    live ``event_id`` always equals the REST ``AlertOut.event_id``.
     """
     provided = _s(event.payload, "event_id")
     if provided:
@@ -87,7 +92,7 @@ def translate(event: Event, *, default_source: str = "monitor") -> AlertIn:
     message = _s(payload, "message") or None
 
     return AlertIn(
-        event_id=_digest(event),
+        event_id=digest_event_id(event),
         event_type=event.event_type,
         source=_s(payload, "source") or event.producer or default_source,
         severity=_s(payload, "severity") or severity_for(event.event_type),
