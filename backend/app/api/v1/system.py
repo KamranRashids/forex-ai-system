@@ -169,12 +169,15 @@ async def _collect_workers(redis: object, ttl_seconds: int) -> dict[str, WorkerH
 async def _refresh_runtime_gauges(redis: object, ttl_seconds: int) -> None:
     """Recompute worker + staleness Prometheus gauges from Redis (called on /metrics)."""
     now = utcnow()
-    for health in await read_worker_health(
-        redis, roles=WORKER_ROLES, now=now, ttl_seconds=ttl_seconds
-    ):
-        WORKER_UP.labels(role=health.role).set(1 if health.status == "up" else 0)
-        if health.age_seconds is not None:
-            WORKER_HEARTBEAT_AGE_SECONDS.labels(role=health.role).set(health.age_seconds)
+    try:
+        for health in await read_worker_health(
+            redis, roles=WORKER_ROLES, now=now, ttl_seconds=ttl_seconds
+        ):
+            WORKER_UP.labels(role=health.role).set(1 if health.status == "up" else 0)
+            if health.age_seconds is not None:
+                WORKER_HEARTBEAT_AGE_SECONDS.labels(role=health.role).set(health.age_seconds)
+    except Exception:  # noqa: BLE001 - metrics refresh must never fail the scrape when Redis is down
+        pass
     try:
         raw = await redis.get(STALENESS_LATEST_KEY)  # type: ignore[attr-defined]
     except Exception:  # noqa: BLE001 - metrics refresh must not fail the scrape
