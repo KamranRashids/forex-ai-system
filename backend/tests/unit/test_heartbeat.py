@@ -105,4 +105,4 @@ async def test_declared_ttl_used_for_classification() -> None:
 
 @pytest.mark.unit
 def test_worker_roles_expected() -> None:
-    assert set(WORKER_ROLES) == {"ingest", "agents", "content", "orchestrator"}
+    assert set(WORKER_ROLES) == {"ingest", "agents", "content", "orchestrator", "alerts"}

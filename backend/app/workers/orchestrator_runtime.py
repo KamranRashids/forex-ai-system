@@ -15,6 +15,29 @@ from app.workers.orchestrator_worker import SCAN_EVERY_CYCLES, OrchestratorWorke
 logger = structlog.stdlib.get_logger(__name__)
 
 
+async def _emit_orchestrator_alert(publisher: object, subject: str, detail: str) -> None:
+    """Best-effort durable ``alert.orchestrator`` sentinel (Phase 8 producer)."""
+    from datetime import UTC, datetime
+
+    from app.bus.events import Event
+
+    event = Event(
+        event_type="alert.orchestrator",
+        payload={
+            "source": "orchestrator",
+            "severity": "warning",
+            "subject": subject,
+            "message": detail,
+        },
+        producer="orchestrator",
+        produced_at=datetime.now(UTC),
+    )
+    try:
+        await publisher.publish_alert(event)  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001 - alerting must never crash the worker
+        logger.debug("orchestrator_alert_publish_failed", subject=subject)
+
+
 async def run_orchestrator(settings: Settings | None = None) -> None:
     """Drive the orchestrator until cancelled (single active instance).
 
@@ -91,6 +114,9 @@ async def run_orchestrator(settings: Settings | None = None) -> None:
                 logger.error(
                     "orchestrator_lock_lost",
                     detail="could not confirm lock ownership; stopping to avoid dual-active",
+                )
+                await _emit_orchestrator_alert(
+                    publisher, "lock_lost", "could not confirm orchestrator lock ownership"
                 )
                 break
             try:

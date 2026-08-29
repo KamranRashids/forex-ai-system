@@ -1,6 +1,7 @@
-"""SQLAlchemy models (P1-2 id/data; P3 signals; P4 content; P5 decisions/risk; P6 backtest)."""
+"""SQLAlchemy models (P1-2 id; P3 signals; P4 content; P5 risk; P6 backtest; P8 alerts)."""
 
 from app.models.agent_signal import AgentSignalRow
+from app.models.alert_event import AlertEvent, severity_for
 from app.models.audit_log import AuditLog
 from app.models.backtest import (
     BacktestEquityRow,
@@ -22,6 +23,7 @@ from app.models.user import User, UserRole
 
 __all__ = [
     "AgentSignalRow",
+    "AlertEvent",
     "AuditLog",
     "BacktestEquityRow",
     "BacktestRunRow",
@@ -41,4 +43,5 @@ __all__ = [
     "SystemSetting",
     "User",
     "UserRole",
+    "severity_for",
 ]

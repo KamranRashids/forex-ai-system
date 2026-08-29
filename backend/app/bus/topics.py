@@ -11,10 +11,19 @@ def bars_closed_topic(timeframe: str) -> str:
 
 
 PRICES_LIVE_CHANNEL: str = "prices.live"
+#: Backward-compatible alias for the legacy Pub/Sub alert channel (Phase 8
+#: moves alerts onto the durable ``ALERTS_STREAM``; the channel name is kept
+#: only for references/tests and is no longer published to).
 EVENTS_ALERTS_CHANNEL: str = "events.alerts"
 SIGNALS_STREAM: str = "signals.stream"
 #: Durable orchestrator decision output stream (Phase 5).
 DECISIONS_STREAM: str = "decisions.stream"
+#: Durable alert event stream (Phase 8) consumed by the ``alerts`` worker
+#: which persists them to ``alert_events`` and fans out to WebSocket clients.
+ALERTS_STREAM: str = "alerts.stream"
+
+#: Consumer group name for the ``alerts`` worker (at-least-once delivery).
+ALERTS_GROUP: str = "alerts"
 
 STREAM_MAXLEN_APPROX: int = 100_000
 

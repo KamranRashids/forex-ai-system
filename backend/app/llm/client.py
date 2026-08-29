@@ -13,6 +13,7 @@ import time
 from collections.abc import Callable
 from typing import Protocol
 
+from app.bus.publisher import EventPublisher
 from app.core.config import Settings, get_settings
 
 
@@ -50,7 +51,12 @@ class DailyBudgetBreaker:
 
     _DOLLARS_PER_TOKEN: float = 0.000005  # placeholder conservative estimate.
 
-    def __init__(self, budget_usd: float, *, now: Callable[[], float] | None = None) -> None:
+    def __init__(
+        self,
+        budget_usd: float,
+        *,
+        now: Callable[[], float] | None = None,
+    ) -> None:
         self._budget = max(0.0, budget_usd)
         self._day = 0
         self._spent = 0.0
@@ -84,7 +90,9 @@ class DailyBudgetBreaker:
         self.reserve(tokens)
 
 
-def build_llm_client(settings: Settings | None = None) -> LLMClient:
+def build_llm_client(
+    settings: Settings | None = None, alert_publisher: EventPublisher | None = None
+) -> LLMClient:
     """Construct the configured LLM client (falls back to a disabled client)."""
     resolved = settings or get_settings()
     provider = (resolved.llm_provider or "none").strip().lower()
@@ -98,6 +106,7 @@ def build_llm_client(settings: Settings | None = None) -> LLMClient:
             budget_usd=resolved.llm_daily_budget_usd,
             max_tokens=resolved.llm_max_tokens,
             timeout_seconds=resolved.llm_timeout_seconds,
+            alert_publisher=alert_publisher,
         )
     return DisabledLLMClient()
 

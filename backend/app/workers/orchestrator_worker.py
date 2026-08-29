@@ -42,6 +42,7 @@ from app.core.metrics import (
 from app.data.market_config import get_market_config
 from app.data.risk_config import load_risk_params
 from app.decisions.engine import DecideResult, DecisionAction, DecisionEngine, OrchParams
+from app.models.decision import DecisionStatus
 
 logger = structlog.stdlib.get_logger(__name__)
 
@@ -194,7 +195,30 @@ class OrchestratorWorker:
         ORCH_DECISION_LATENCY.observe(time.perf_counter() - started)
         if result.action == DecisionAction.PERSIST:
             await self._emit_decision(result)
+            if result.status == DecisionStatus.BLOCKED:
+                await self._emit_risk_brake_alert(result)
         return result
+
+    async def _emit_risk_brake_alert(self, result: DecideResult) -> None:
+        """Surface a risk-gate veto as a durable ``alert.risk_brake`` (Phase 8)."""
+        event = Event(
+            event_type="alert.risk_brake",
+            payload={
+                "source": "risk",
+                "severity": "warning",
+                "symbol": result.symbol,
+                "timeframe": result.timeframe,
+                "bucket_ts": result.bucket_ts.isoformat() if result.bucket_ts else "",
+                "veto_code": result.veto_code or "blocked",
+                "direction": result.direction.value if result.direction else "FLAT",
+            },
+            producer="orchestrator",
+            produced_at=self._now,
+        )
+        try:
+            await self._publisher.publish_alert(event)
+        except Exception:  # noqa: BLE001 - alerting must never crash the pipeline
+            logger.debug("risk_brake_alert_publish_failed", symbol=result.symbol)
 
     async def _emit_decision(self, result: DecideResult) -> None:
         event = Event(

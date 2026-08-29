@@ -10,10 +10,12 @@ from asgi_correlation_id import CorrelationIdMiddleware
 from fastapi import FastAPI
 
 from app.api.v1.admin import router as admin_router
+from app.api.v1.alerts import router as alerts_router
 from app.api.v1.auth import router as auth_router
 from app.api.v1.backtests import router as backtests_router
 from app.api.v1.content import router as content_router
 from app.api.v1.decisions import router as decisions_router
+from app.api.v1.realtime import router as realtime_router
 from app.api.v1.risk import router as risk_router
 from app.api.v1.signals import router as signals_router
 from app.api.v1.system import router as system_router
@@ -111,6 +113,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(decisions_router, prefix=API_V1_PREFIX)
     app.include_router(risk_router, prefix=API_V1_PREFIX)
     app.include_router(backtests_router, prefix=API_V1_PREFIX)
+    app.include_router(alerts_router, prefix=API_V1_PREFIX)
+    app.include_router(realtime_router, prefix=API_V1_PREFIX)
     _log_banner(logger, resolved)
     return app
 

@@ -98,6 +98,39 @@ STALENESS_MAX_AGE_SECONDS = Gauge(
 _UNMATCHED: str = "<unmatched>"
 
 
+# --- Alerts & realtime (Phase 8) ----------------------------------------------
+# Alert/WebSocket handling runs inside both worker (alert persistence) and API
+# (WS hub) processes; the persistence counters increment in whichever process
+# owns the action.
+ALERT_EVENTS_TOTAL = Counter(
+    "alert_events_total",
+    "Alert events appended to alerts.stream, per source",
+    ["source"],
+)
+ALERTS_PENDING = Gauge(
+    "alerts_pending",
+    "Alerts persisted but not yet acknowledged (observability; computed from DB)",
+)
+WS_CONNECTIONS = Gauge(
+    "ws_connections_active",
+    "Currently open WebSocket connections",
+)
+WS_CONNECTIONS_TOTAL = Counter(
+    "ws_connections_total",
+    "WebSocket connections accepted",
+)
+WS_MESSAGES_TOTAL = Counter(
+    "ws_messages_total",
+    "Frames delivered over WebSocket, per topic",
+    ["topic"],
+)
+WS_ERROR_TOTAL = Counter(
+    "ws_errors_total",
+    "WebSocket failures (auth/transport/topic)",
+    ["reason"],
+)
+
+
 class MetricsMiddleware(BaseHTTPMiddleware):
     async def dispatch(
         self, request: Request, call_next: Callable[[Request], Awaitable[Response]]

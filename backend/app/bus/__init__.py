@@ -7,6 +7,8 @@ from app.bus.publisher import (
     RedisEventPublisher,
 )
 from app.bus.topics import (
+    ALERTS_GROUP,
+    ALERTS_STREAM,
     EVENTS_ALERTS_CHANNEL,
     PRICES_LIVE_CHANNEL,
     SCHEMA_VERSION,
@@ -16,6 +18,8 @@ from app.bus.topics import (
 )
 
 __all__ = [
+    "ALERTS_GROUP",
+    "ALERTS_STREAM",
     "EVENTS_ALERTS_CHANNEL",
     "Event",
     "EventPublisher",

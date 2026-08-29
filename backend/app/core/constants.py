@@ -32,3 +32,4 @@ class AuditActions:
     BACKFILL_TRIGGERED = "admin.backfill_triggered"
     RISK_PARAMS_UPDATED = "admin.risk_params_updated"
     DECISION_REPLAY_TRIGGERED = "admin.decision_replay_triggered"
+    ALERT_ACKNOWLEDGED = "admin.alert_acknowledged"

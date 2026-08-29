@@ -8,8 +8,8 @@ from redis.asyncio import Redis
 
 from app.bus.events import Event
 from app.bus.topics import (
+    ALERTS_STREAM,
     DECISIONS_STREAM,
-    EVENTS_ALERTS_CHANNEL,
     PRICES_LIVE_CHANNEL,
     SIGNALS_STREAM,
     STREAM_MAXLEN_APPROX,
@@ -51,7 +51,18 @@ class RedisEventPublisher:
         await self._redis.publish(PRICES_LIVE_CHANNEL, event.to_json())
 
     async def publish_alert(self, event: Event) -> None:
-        await self._redis.publish(EVENTS_ALERTS_CHANNEL, event.to_json())
+        """Append an alert event to the durable ``alerts.stream`` (Phase 8).
+
+        Consumers (the ``alerts`` worker) acknowledge via a consumer group after
+        persisting to ``alert_events``; at-least-once delivery with idempotent
+        persistence means redeliveries are safe.
+        """
+        await self._redis.xadd(
+            ALERTS_STREAM,
+            {"data": event.to_json()},
+            maxlen=STREAM_MAXLEN_APPROX,
+            approximate=True,
+        )
 
     async def publish_signal(self, event: Event) -> None:
         await self._redis.xadd(

@@ -8,8 +8,13 @@ their deterministic path.
 
 from __future__ import annotations
 
+from contextlib import suppress
+from datetime import UTC, datetime
+
 import httpx
 
+from app.bus.events import Event
+from app.bus.publisher import EventPublisher, NullEventPublisher
 from app.core.config import get_settings
 from app.llm.client import DailyBudgetBreaker, LLMUnavailable
 
@@ -25,6 +30,7 @@ class OpenCodeZenClient:
         max_tokens: int,
         timeout_seconds: float,
         http: httpx.AsyncClient | None = None,
+        alert_publisher: EventPublisher | None = None,
     ) -> None:
         self._api_key = api_key
         self._model = model
@@ -34,6 +40,8 @@ class OpenCodeZenClient:
         self._budget = DailyBudgetBreaker(budget_usd)
         self._owns_client = http is None
         self._client = http or httpx.AsyncClient(timeout=httpx.Timeout(self._timeout))
+        self._alert_publisher = alert_publisher or NullEventPublisher()
+        self._budget_alerted = False
 
     @classmethod
     def from_settings(cls) -> OpenCodeZenClient:
@@ -55,7 +63,11 @@ class OpenCodeZenClient:
         if not self._api_key:
             raise LLMUnavailable("OPENCODE_ZEN_API_KEY is empty")
         tokens = min(max(16, int(max_tokens)), self._max_tokens)
-        self._budget.authorize(tokens)
+        try:
+            self._budget.authorize(tokens)
+        except LLMUnavailable:
+            await self._emit_budget_alert()
+            raise
         try:
             response = await self._client.post(
                 f"{self._base_url}/v1/chat/completions",
@@ -83,6 +95,24 @@ class OpenCodeZenClient:
         if not isinstance(content, str):
             raise LLMUnavailable("LLM returned non-string content")
         return content.strip()
+
+    async def _emit_budget_alert(self) -> None:
+        """Publish a durable ``alert.llm_budget`` once when the daily budget trips."""
+        if self._budget_alerted:
+            return
+        self._budget_alerted = True
+        event = Event(
+            event_type="alert.llm_budget",
+            payload={
+                "source": "llm",
+                "severity": "warning",
+                "state": "budget_exhausted",
+            },
+            producer="llm",
+            produced_at=datetime.now(UTC),
+        )
+        with suppress(Exception):  # noqa: BLE001 - alerting must never break a call
+            await self._alert_publisher.publish_alert(event)
 
     async def aclose(self) -> None:
         if self._owns_client:

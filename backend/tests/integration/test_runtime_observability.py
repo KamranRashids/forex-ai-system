@@ -35,11 +35,12 @@ async def test_system_status_reports_worker_liveness(
     resp = await client.get("/system/status")
     assert resp.status_code == 200
     workers = resp.json()["workers"]
-    assert set(workers) == {"ingest", "agents", "content", "orchestrator"}
+    assert set(workers) == {"ingest", "agents", "content", "orchestrator", "alerts"}
     assert workers["ingest"]["status"] == "up"
     assert workers["content"]["status"] == "stale"
     assert workers["agents"]["status"] == "down"
     assert workers["orchestrator"]["status"] == "down"
+    assert workers["alerts"]["status"] == "down"
     assert "age_seconds" in workers["ingest"]
 
 

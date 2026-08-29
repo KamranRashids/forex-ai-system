@@ -5,6 +5,7 @@ Roles:
 - ``agents``      Phase 3/4 — technical/regime/fundamental/sentiment analysis
 - ``content``     Phase 4 — news + economic-calendar ingestion (content_runtime.py)
 - ``orchestrator`` Phase 5 — fuse signals + risk-gate into decisions/paper intents
+- ``alerts``      Phase 8 — persist alerts.stream into alert_events (alert_runtime.py)
 - ``executor``     later phase; refuse to start
 """
 
@@ -54,6 +55,10 @@ def main() -> None:
         from app.workers.orchestrator_runtime import run_orchestrator
 
         coroutine = run_orchestrator(settings)
+    elif role == "alerts":
+        from app.workers.alert_runtime import run_alerts_worker
+
+        coroutine = run_alerts_worker(settings)
     else:
         _logger().error("worker_role_not_available_yet", role=role, arrives_in="Phase 5+")
         raise SystemExit(2)

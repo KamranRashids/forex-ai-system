@@ -27,7 +27,7 @@ from app.bus.topics import worker_heartbeat_key
 DEFAULT_HEARTBEAT_TTL_SECONDS: int = 60
 
 #: Roles we expect to observe. Kept in sync with worker_main.py dispatch.
-WORKER_ROLES: tuple[str, ...] = ("ingest", "agents", "content", "orchestrator")
+WORKER_ROLES: tuple[str, ...] = ("ingest", "agents", "content", "orchestrator", "alerts")
 
 _LAST_SEEN_FIELD: str = "last_seen"
 _STARTED_AT_FIELD: str = "started_at"
