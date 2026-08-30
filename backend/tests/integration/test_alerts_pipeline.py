@@ -279,3 +279,95 @@ async def test_ws_stream_rejects_disallowed_origin_with_valid_ticket(fake_redis:
         ) as _socket:
             _socket.receive_text()
         assert exc_info.value.code == WS_AUTH_CLOSE_CODE
+
+
+@pytest.mark.asyncio
+async def test_worker_restart_catchup_is_idempotent(
+    client: Any, db_sessionmaker: Any, fake_redis: Any
+) -> None:
+    """A worker restart re-runs the same group; no rows are duplicated.
+
+    First generation consumes event A. A second generation (a fresh worker over
+    the same consumer group) re-sees pending/redelivered entries and new events
+    without ever duplicating already-persisted event_ids (ON CONFLICT DO NOTHING).
+    """
+    from tests.integration.conftest import bearer, register_and_login
+
+    async def _count(email: str) -> int:
+        headers = bearer((await register_and_login(client, email))["access_token"])
+        resp = await client.get("/api/v1/alerts", headers=headers)
+        assert resp.status_code == 200, resp.text
+        return resp.json()["total"]
+
+    async def _run() -> None:
+        await _run_worker_once(db_sessionmaker, fake_redis)
+
+    # Generation 1: persist event A.
+    await fake_redis.xadd(ALERTS_STREAM, {"data": _alert_event().to_json()})
+    await _run()
+    assert await _count("restart-a@example.com") == 1
+
+    # Generation 2 (restart): redelivery of A (same event_id) must NOT duplicate.
+    await fake_redis.xadd(ALERTS_STREAM, {"data": _alert_event().to_json()})
+    await _run()
+    assert await _count("restart-a2@example.com") == 1
+
+    # Generation 3: a brand-new event B is caught up after restart, A stays at 1.
+    new_event = Event(
+        event_type="alert.provider_outage",
+        payload={"source": "provider", "symbol": "EURUSD", "code": "timeout"},
+        producer="ingest",
+        produced_at=datetime(2026, 8, 29, 13, 0, tzinfo=UTC),
+    )
+    await fake_redis.xadd(ALERTS_STREAM, {"data": new_event.to_json()})
+    await _run()
+
+    headers = bearer(
+        (await register_and_login(client, "restart-final@example.com"))["access_token"]
+    )
+    resp = await client.get("/api/v1/alerts", headers=headers)
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    ids = {item["event_id"] for item in body["items"]}
+    assert len(ids) == 2  # A + B exactly once each, no duplicates across restarts
+
+
+@pytest.mark.asyncio
+async def test_ws_ticket_is_single_use(db_sessionmaker: Any, fake_redis: Any) -> None:
+    """A consumed ticket cannot be reused: the 2nd connect fails with 4401.
+
+    This is the server contract behind the frontend reconnect fix — every
+    (re)connect must fetch a *fresh* ticket because redemption is one-time.
+    """
+    from app.core.config import reset_settings_cache
+    from app.db.session import get_redis
+    from app.main import create_app
+    from app.ws.hub import WS_AUTH_CLOSE_CODE
+    from app.ws.tickets import issue_ticket
+    from starlette.websockets import WebSocketDisconnect
+
+    reset_settings_cache()
+    application = create_app()
+
+    async def override_get_redis():
+        yield fake_redis
+
+    application.dependency_overrides[get_redis] = override_get_redis
+
+    ticket = await issue_ticket(fake_redis, user_id=__import__("uuid").uuid4(), role="viewer")
+
+    url = f"/api/v1/ws/stream?ticket={ticket.ticket}"
+    with TestClient(application) as test_client:
+        # First connect redeems (consumes) the ticket.
+        with test_client.websocket_connect(url) as socket:
+            socket.send_json({"type": "subscribe", "topics": ["alerts"]})
+            ack = socket.receive_json()
+            assert ack["type"] == "subscribed"
+
+        # Second connect with the SAME ticket must be rejected (single-use).
+        with (
+            pytest.raises(WebSocketDisconnect) as exc_info,
+            test_client.websocket_connect(url) as _socket,
+        ):
+            _socket.receive_text()
+        assert exc_info.value.code == WS_AUTH_CLOSE_CODE

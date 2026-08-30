@@ -166,7 +166,6 @@ export class AlertsSocket {
   private reconnectAttempts = 0;
   private firstOpen = true;
   private cb: AlertsSocketCallbacks;
-  private ticketUrl: string | null = null;
 
   constructor(cb: AlertsSocketCallbacks) {
     this.cb = cb;
@@ -174,26 +173,35 @@ export class AlertsSocket {
 
   async start(): Promise<void> {
     this.closed = false;
+    await this.connect();
+  }
+
+  /** Obtain a fresh one-time ticket and open a socket bound to it. */
+  private async connect(): Promise<void> {
+    if (this.closed) return;
+    let ticket: TicketOut;
     try {
-      const ticket = await authFetch<TicketOut>("/api/v1/ws/ticket", { method: "POST" });
-      this.ticketUrl = `${WS_URL}${ticket.ws_url}`;
+      ticket = await authFetch<TicketOut>("/api/v1/ws/ticket", { method: "POST" });
     } catch (err) {
       if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
         this.cb.onAuthError?.();
         return;
       }
       this.cb.onError("Could not obtain a WebSocket ticket (API unreachable or unauthorized).");
+      this.scheduleReconnect();
       return;
     }
-    this.open();
+    if (this.closed) return;
+    this.open(`${WS_URL}${ticket.ws_url}`);
   }
 
-  private open(): void {
-    if (this.closed || !this.ticketUrl) return;
-    const socket = new WebSocket(this.ticketUrl);
+  private open(ticketUrl: string): void {
+    if (this.closed) return;
+    const socket = new WebSocket(ticketUrl);
     this.socket = socket;
 
     socket.onopen = () => {
+      this.reconnectAttempts = 0;
       if (this.firstOpen) {
         this.firstOpen = false;
         this.cb.onOpen?.();
@@ -237,7 +245,10 @@ export class AlertsSocket {
     this.reconnectAttempts += 1;
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
-      this.open();
+      // Reconnect must use a FRESH one-time ticket: the previous ticket was
+      // atomically consumed (GETDEL) by the socket that just closed, so reusing
+      // its URL would be rejected with 4401 and re-enter a broken retry loop.
+      void this.connect();
     }, delay);
   }
 
