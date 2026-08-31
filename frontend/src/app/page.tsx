@@ -16,6 +16,12 @@ export default function Home() {
 
       <nav className="flex items-center gap-4">
         <Link
+          href="/signals"
+          className="rounded-lg border border-slate-700 bg-slate-800/60 px-4 py-2 text-sm font-semibold text-slate-200 transition-colors hover:border-slate-500 hover:text-white"
+        >
+          Signals & Decisions
+        </Link>
+        <Link
           href="/alerts"
           className="rounded-lg border border-slate-700 bg-slate-800/60 px-4 py-2 text-sm font-semibold text-slate-200 transition-colors hover:border-slate-500 hover:text-white"
         >
