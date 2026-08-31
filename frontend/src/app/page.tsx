@@ -28,6 +28,12 @@ export default function Home() {
           Live Alerts
         </Link>
         <Link
+          href="/backtests"
+          className="rounded-lg border border-slate-700 bg-slate-800/60 px-4 py-2 text-sm font-semibold text-slate-200 transition-colors hover:border-slate-500 hover:text-white"
+        >
+          Backtests
+        </Link>
+        <Link
           href="/login"
           className="rounded-lg border border-slate-700 bg-slate-800/60 px-4 py-2 text-sm font-semibold text-slate-200 transition-colors hover:border-slate-500 hover:text-white"
         >
