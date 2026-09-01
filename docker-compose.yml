@@ -112,7 +112,7 @@ services:
       api:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "pgrep -f 'app.worker_main' >/dev/null"]
+      test: ["CMD", "python", "/app/app/worker_healthcheck.py"]
       interval: 15s
       timeout: 5s
       retries: 8
@@ -146,7 +146,7 @@ services:
       worker-ingest:
         condition: service_started
     healthcheck:
-      test: ["CMD-SHELL", "pgrep -f 'app.worker_main' >/dev/null"]
+      test: ["CMD", "python", "/app/app/worker_healthcheck.py"]
       interval: 15s
       timeout: 5s
       retries: 8
@@ -179,7 +179,7 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "pgrep -f 'app.worker_main' >/dev/null"]
+      test: ["CMD", "python", "/app/app/worker_healthcheck.py"]
       interval: 15s
       timeout: 5s
       retries: 8
@@ -215,7 +215,7 @@ services:
       worker-agents:
         condition: service_started
     healthcheck:
-      test: ["CMD-SHELL", "pgrep -f 'app.worker_main' >/dev/null"]
+      test: ["CMD", "python", "/app/app/worker_healthcheck.py"]
       interval: 15s
       timeout: 5s
       retries: 8
@@ -246,7 +246,7 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "pgrep -f 'app.worker_main' >/dev/null"]
+      test: ["CMD", "python", "/app/app/worker_healthcheck.py"]
       interval: 15s
       timeout: 5s
       retries: 8

@@ -95,10 +95,11 @@ docker compose restart prometheus grafana
   user-initiated stop that way (documented). To recover, run
   `docker compose restart <worker>`. A genuine process crash (non-zero exit)
   **is** auto-restarted by `unless-stopped`.
-- **Worker shows "health: starting/unhealthy" in `docker compose ps`** but
-  `/system/status` says `up`: this is the pre-existing `pgrep -f app.worker_main`
-  healthcheck quirk (with `exec`, python is PID 1, `pgrep -f` can miss it).
-  Trust `/system/status` + the Redis heartbeat, not the compose health string.
+- **Worker healthchecks are truthful `python` probes** — each worker container
+  runs `python /app/app/worker_healthcheck.py` (exit 0 = PID 1 is a `worker_main`
+  process). A "health: starting/unhealthy" status therefore reflects a real
+  problem; check `docker logs <worker>` and §5. `/system/status` + the Redis
+  heartbeat + `forex_worker_up` remain the runtime source of truth.
 - **content worker age > 60s**: by design — its loop is 300s with declared TTL
   900s. Judge it against its declared TTL, not 60s.
 

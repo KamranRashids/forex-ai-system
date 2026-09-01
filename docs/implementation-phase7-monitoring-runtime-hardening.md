@@ -145,10 +145,13 @@ Added under the Phase 7 comment block:
   - Empirically, signals other than SIGTERM/SIGKILL sent to the container init
     (PID 1, python) are ignored by the kernel's PID-1 signal semantics
     (SIGABRT/SEGV are swallowed); SIGKILL kills it but counts as user-initiated.
-- **Docker healthcheck quirk (pre-existing):** `pgrep -f app.worker_main` reports
+- **Docker healthcheck quirk (pre-existing, resolved):** `pgrep -f app.worker_main` reported
   workers "health: starting/unhealthy" intermittently even though the processes
   and heartbeats are alive and `/system/status` reports `up`. Not introduced by
-  Phase 7; ordering of `exec` + `pgrep` healthcheck is the cause. Left as-is.
+  Phase 7; ordering of `exec` + `pgrep` healthcheck was the cause. **Resolved in
+  Phase 12** by replacing every worker healthcheck with a truthful Python probe
+  (`python /app/app/worker_healthcheck.py`), so the compose health string now
+  reflects reality.
 - The content worker's **long loop** (300s) means its heartbeat is only a couple
   minutes old at check time by design (TTL 900s covers it); staleness age for
   content should be read against its declared TTL.

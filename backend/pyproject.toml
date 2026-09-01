@@ -114,6 +114,9 @@ omit = [
     "app/monitor/staleness.py",
     "app/workers/*",
     "app/worker_main.py",
+    # Container healthcheck entrypoint; decision logic unit-tested, /proc I/O
+    # shell exercised by the live smoke (the worker container runs it).
+    "app/worker_healthcheck.py",
     # Phase 6 async I/O shells: backtest persistence (repository) and the
     # session-factory orchestration (service) are verified behaviorally by the
     # integration suite; the pure sync core (broker, driver, agent_runner,
