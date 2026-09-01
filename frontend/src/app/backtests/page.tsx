@@ -374,7 +374,12 @@ export default function BacktestsPage() {
                 <h3 className="mb-2 text-sm font-semibold uppercase tracking-widest text-slate-400">
                   Metrics
                 </h3>
-                <div className="grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-slate-800 bg-slate-800 sm:grid-cols-4">
+                {selected.status === "RUNNING" && (!m || (m.bars ?? 0) === 0) ? (
+                  <p className="text-sm text-slate-500">
+                    This run is still in progress — metrics and coverage appear once it completes.
+                  </p>
+                ) : (
+                  <div className="grid grid-cols-2 gap-px overflow-hidden rounded-xl border border-slate-800 bg-slate-800 sm:grid-cols-4">
                   {[
                     { label: "Net PnL", value: fmtCurrency(m?.net_pnl ?? 0), tone: (m?.net_pnl ?? 0) >= 0 ? "text-emerald-300" : "text-red-300" },
                     { label: "Gross PnL", value: fmtCurrency(m?.gross_pnl ?? 0) },
@@ -398,7 +403,8 @@ export default function BacktestsPage() {
                       </div>
                     </div>
                   ))}
-                </div>
+                  </div>
+                )}
               </section>
 
               {/* Coverage */}

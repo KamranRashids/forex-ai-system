@@ -22,6 +22,7 @@ import {
   type Timeframe,
 } from "@/lib/signals";
 import { ApiError, authFetch, clearSession, getStoredUser, getToken } from "@/lib/auth";
+import { fetchCandles, recentCandlesStart, type Candle } from "@/lib/market";
 import { fetchServerMode, isSafeMode } from "@/lib/system";
 
 type ConnState = "connecting" | "open" | "reconnecting" | "idle";
@@ -87,6 +88,8 @@ export default function SignalsPage() {
   const [decisionHistory, setDecisionHistory] = useState<DecisionItem[]>([]);
   const [liveSignals, setLiveSignals] = useState<AgentSignal[]>([]);
   const [liveDecisions, setLiveDecisions] = useState<DecisionItem[]>([]);
+  const [candles, setCandles] = useState<Candle[]>([]);
+  const [candlesError, setCandlesError] = useState<string | null>(null);
 
   const [loading, setLoading] = useState(true);
   const [historyError, setHistoryError] = useState<string | null>(null);
@@ -133,6 +136,18 @@ export default function SignalsPage() {
       }
     } finally {
       setLoading(false);
+    }
+
+    try {
+      const rows = await fetchCandles(sym, tf, { start: recentCandlesStart(tf, 8), limit: 8 });
+      setCandles(rows);
+      setCandlesError(null);
+    } catch (err) {
+      if (err instanceof ApiError && (err.status === 401 || err.status === 403)) {
+        setAuthError(true);
+      } else {
+        setCandlesError(err instanceof ApiError ? err.message : "Could not load candles.");
+      }
     }
   }, []);
 
@@ -458,6 +473,56 @@ export default function SignalsPage() {
                   </div>
                 )}
               </article>
+            )}
+          </section>
+
+          {/* Recent candles (from the candles endpoint) */}
+          <section>
+            <h2 className="mb-2 text-sm font-semibold uppercase tracking-widest text-slate-400">
+              Recent candles
+            </h2>
+            {candlesError ? (
+              <p className="text-sm text-red-300">Candles: {candlesError}</p>
+            ) : candles.length === 0 ? (
+              <p className="text-sm text-slate-500">No candle data for this pair/timeframe.</p>
+            ) : (
+              <table className="w-full text-left text-xs">
+                <thead>
+                  <tr className="border-b border-slate-800 text-slate-500">
+                    <th className="py-1.5 pr-2 font-medium">Time</th>
+                    <th className="py-1.5 pr-2 font-medium">Open</th>
+                    <th className="py-1.5 pr-2 font-medium">High</th>
+                    <th className="py-1.5 pr-2 font-medium">Low</th>
+                    <th className="py-1.5 pr-2 font-medium">Close</th>
+                    <th className="py-1.5 font-medium">Δ</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {candles.map((candle) => {
+                    const change = candle.close - candle.open;
+                    return (
+                      <tr key={candle.ts} className="border-b border-slate-800/60">
+                        <td className="py-1.5 pr-2 text-slate-500">{fmtTime(candle.ts)}</td>
+                        <td className="py-1.5 pr-2 text-slate-300">{fmtNum(candle.open, 5)}</td>
+                        <td className="py-1.5 pr-2 text-slate-300">{fmtNum(candle.high, 5)}</td>
+                        <td className="py-1.5 pr-2 text-slate-300">{fmtNum(candle.low, 5)}</td>
+                        <td className="py-1.5 pr-2 text-slate-300">{fmtNum(candle.close, 5)}</td>
+                        <td
+                          className={`py-1.5 font-semibold ${
+                            change > 0
+                              ? "text-emerald-300"
+                              : change < 0
+                                ? "text-red-300"
+                                : "text-slate-400"
+                          }`}
+                        >
+                          {change === 0 ? "—" : `${change > 0 ? "+" : ""}${fmtNum(change, 5)}`}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
             )}
           </section>
 

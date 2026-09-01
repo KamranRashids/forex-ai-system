@@ -52,7 +52,7 @@ export default function Home() {
         <dt className="font-medium text-slate-300">API</dt>
         <dd className="text-slate-400">{apiUrl}</dd>
         <dt className="font-medium text-slate-300">Status</dt>
-        <dd className="text-slate-400">Phase 8 — authenticated alerts live view</dd>
+        <dd className="text-slate-400">live dashboard — alerts, signals, candle & price data</dd>
         <dt className="font-medium text-slate-300">Trading mode</dt>
         <dd className="text-amber-300">paper / safe</dd>
       </dl>
