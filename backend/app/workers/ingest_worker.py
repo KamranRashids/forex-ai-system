@@ -27,6 +27,7 @@ async def run_ingest_worker(settings: Settings | None = None) -> None:
         heartbeat_ttl_for_loop,
     )
     from app.monitor.staleness import StalenessMonitor
+    from app.monitor.worker_metrics import start_worker_metrics
 
     resolved = settings or get_settings()
     session_factory: async_sessionmaker[AsyncSession] = get_sessionmaker()
@@ -56,6 +57,7 @@ async def run_ingest_worker(settings: Settings | None = None) -> None:
         ),
     )
     shutdown = ShutdownCoordinator()
+    worker_metrics = start_worker_metrics("ingest")
 
     logger.warning(
         "SAFE MODE ACTIVE: paper trading only. Live order execution is not implemented anywhere.",
@@ -72,6 +74,7 @@ async def run_ingest_worker(settings: Settings | None = None) -> None:
     try:
         while not shutdown.should_stop:
             await heartbeat.touch()
+            worker_metrics.mark_heartbeat()
             # Runtime-tunable universe (admin overrides) reread every cycle.
             async with session_factory() as session:
                 symbols, timeframes = await get_market_config(session, resolved)
@@ -84,7 +87,12 @@ async def run_ingest_worker(settings: Settings | None = None) -> None:
             instruments = [instruments_by_symbol[s] for s in symbols if s in instruments_by_symbol]
 
             cycle_start = service.now
-            result = await service.run_cycle(instruments, timeframes)
+            try:
+                result = await service.run_cycle(instruments, timeframes)
+            except Exception:
+                worker_metrics.error()
+                raise
+            worker_metrics.cycle(errors=len(result.failed))
             logger.info(
                 "ingest_cycle",
                 inserted=result.inserted,

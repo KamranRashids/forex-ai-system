@@ -49,6 +49,7 @@ async def run_orchestrator(settings: Settings | None = None) -> None:
     """
     from app.bus.publisher import RedisEventPublisher
     from app.monitor.heartbeat import WorkerHeartbeat, heartbeat_ttl_for_loop
+    from app.monitor.worker_metrics import start_worker_metrics
 
     resolved = settings or get_settings()
     session_factory: async_sessionmaker[AsyncSession] = get_sessionmaker()
@@ -97,6 +98,7 @@ async def run_orchestrator(settings: Settings | None = None) -> None:
             min_ttl_seconds=resolved.heartbeat_ttl_seconds,
         ),
     )
+    worker_metrics = start_worker_metrics("orchestrator")
 
     logger.warning(
         "SAFE MODE ACTIVE: paper trading only. Live order execution is not implemented anywhere.",
@@ -108,6 +110,7 @@ async def run_orchestrator(settings: Settings | None = None) -> None:
     try:
         while not shutdown.should_stop:
             await heartbeat.touch()
+            worker_metrics.mark_heartbeat()
             # Renew ownership before doing any work; if we can no longer confirm
             # ownership we fail closed and stop (another orchestrator is active).
             if not await worker.renew_lock():
@@ -121,6 +124,7 @@ async def run_orchestrator(settings: Settings | None = None) -> None:
                 break
             try:
                 batch = await worker.poll_once()
+                worker_metrics.cycle(errors=batch.errors)
                 if batch.processed or batch.replayed or batch.errors:
                     logger.info(
                         "orchestrator_batch",
@@ -130,6 +134,7 @@ async def run_orchestrator(settings: Settings | None = None) -> None:
                         statuses=batch.status_count,
                     )
             except Exception as exc:  # noqa: BLE001 - survive transient bus failures
+                worker_metrics.error()
                 logger.exception("orchestrator_poll_failed", error=str(exc))
 
             cycle += 1

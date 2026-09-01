@@ -20,6 +20,7 @@ async def run_agents_worker(settings: Settings | None = None) -> None:
         WorkerHeartbeat,
         heartbeat_ttl_for_loop,
     )
+    from app.monitor.worker_metrics import start_worker_metrics
     from app.workers.agent_worker import AgentWorker
 
     resolved = settings or get_settings()
@@ -43,6 +44,7 @@ async def run_agents_worker(settings: Settings | None = None) -> None:
         ttl_seconds=heartbeat_ttl_for_loop(5, min_ttl_seconds=resolved.heartbeat_ttl_seconds),
     )
     shutdown = ShutdownCoordinator()
+    worker_metrics = start_worker_metrics("agents")
 
     logger.warning(
         "SAFE MODE ACTIVE: paper trading only. Live order execution is not implemented anywhere.",
@@ -54,7 +56,9 @@ async def run_agents_worker(settings: Settings | None = None) -> None:
     try:
         while not shutdown.should_stop:
             await heartbeat.touch()
+            worker_metrics.mark_heartbeat()
             batch = await worker.poll_once()
+            worker_metrics.cycle(errors=batch.errors)
             if batch.processed or batch.skipped_stale or batch.errors:
                 logger.info(
                     "agent_batch",

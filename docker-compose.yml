@@ -93,6 +93,7 @@ services:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-forex}:${POSTGRES_PASSWORD:-forex_dev_password}@postgres:5432/${POSTGRES_DB:-forex_ai}
       REDIS_URL: redis://redis:6379/0
       WORKER_ROLE: ingest
+      WORKER_METRICS_PORT: "9101"
       MARKET_DATA_PROVIDER: ${MARKET_DATA_PROVIDER:-synthetic}
       MARKET_DATA_SYMBOLS: ${MARKET_DATA_SYMBOLS:-EURUSD,GBPUSD,USDJPY,AUDUSD,USDCAD,USDCHF,NZDUSD}
       MARKET_DATA_TIMEFRAMES: ${MARKET_DATA_TIMEFRAMES:-M15,H1,H4}
@@ -133,6 +134,7 @@ services:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-forex}:${POSTGRES_PASSWORD:-forex_dev_password}@postgres:5432/${POSTGRES_DB:-forex_ai}
       REDIS_URL: redis://redis:6379/0
       WORKER_ROLE: agents
+      WORKER_METRICS_PORT: "9102"
       MARKET_DATA_TIMEFRAMES: ${MARKET_DATA_TIMEFRAMES:-M15,H1,H4}
     volumes:
       - ./backend/app:/app/app
@@ -167,6 +169,7 @@ services:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-forex}:${POSTGRES_PASSWORD:-forex_dev_password}@postgres:5432/${POSTGRES_DB:-forex_ai}
       REDIS_URL: redis://redis:6379/0
       WORKER_ROLE: content
+      WORKER_METRICS_PORT: "9105"
       NEWS_PROVIDER: ${NEWS_PROVIDER:-synthetic}
       CALENDAR_PROVIDER: ${CALENDAR_PROVIDER:-synthetic}
     volumes:
@@ -200,6 +203,7 @@ services:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-forex}:${POSTGRES_PASSWORD:-forex_dev_password}@postgres:5432/${POSTGRES_DB:-forex_ai}
       REDIS_URL: redis://redis:6379/0
       WORKER_ROLE: orchestrator
+      WORKER_METRICS_PORT: "9103"
       MARKET_DATA_SYMBOLS: ${MARKET_DATA_SYMBOLS:-EURUSD,GBPUSD,USDJPY,AUDUSD,USDCAD,USDCHF,NZDUSD}
       MARKET_DATA_TIMEFRAMES: ${MARKET_DATA_TIMEFRAMES:-M15,H1,H4}
       ORCH_POLL_MS: ${ORCH_POLL_MS:-200}
@@ -236,6 +240,7 @@ services:
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-forex}:${POSTGRES_PASSWORD:-forex_dev_password}@postgres:5432/${POSTGRES_DB:-forex_ai}
       REDIS_URL: redis://redis:6379/0
       WORKER_ROLE: alerts
+      WORKER_METRICS_PORT: "9104"
     volumes:
       - ./backend/app:/app/app
       - ./backend/migrations:/app/migrations

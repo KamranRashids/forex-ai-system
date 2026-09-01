@@ -11,6 +11,7 @@ from app.core.config import Settings, get_settings
 from app.core.shutdown import ShutdownCoordinator
 from app.db.session import get_redis_client, get_sessionmaker
 from app.monitor.heartbeat import WorkerHeartbeat, heartbeat_ttl_for_loop
+from app.monitor.worker_metrics import start_worker_metrics
 from app.workers.alert_worker import ALERT_POLL_SECONDS, AlertWorker
 
 logger = structlog.stdlib.get_logger(__name__)
@@ -38,6 +39,7 @@ async def run_alerts_worker(settings: Settings | None = None) -> None:
         ),
     )
     shutdown = ShutdownCoordinator()
+    worker_metrics = start_worker_metrics("alerts")
 
     logger.warning(
         "SAFE MODE ACTIVE: paper trading only. Live order execution is not implemented anywhere.",
@@ -47,8 +49,10 @@ async def run_alerts_worker(settings: Settings | None = None) -> None:
     try:
         while not shutdown.should_stop:
             await heartbeat.touch()
+            worker_metrics.mark_heartbeat()
             try:
                 batch = await worker.poll_once()
+                worker_metrics.cycle(errors=batch.errors)
                 if batch.processed or batch.replayed or batch.errors:
                     logger.info(
                         "alerts_batch",
@@ -58,6 +62,7 @@ async def run_alerts_worker(settings: Settings | None = None) -> None:
                         inserted=batch.inserted,
                     )
             except Exception as exc:  # noqa: BLE001 - survive transient bus failures
+                worker_metrics.error()
                 logger.exception("alerts_cycle_failed", error=str(exc))
             await asyncio.sleep(ALERT_POLL_SECONDS)
     finally:

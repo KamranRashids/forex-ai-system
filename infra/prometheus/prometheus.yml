@@ -16,3 +16,17 @@ scrape_configs:
       - targets: ["api:8000"]
         labels:
           service: forex-ai-api
+
+  # Phase 12 O-1: per-process worker exporters (each worker owns its loop's
+  # liveness/cycle/error metrics; ports pinned in docker-compose.yml).
+  - job_name: forex-ai-workers
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          - worker-ingest:9101
+          - worker-agents:9102
+          - worker-orchestrator:9103
+          - worker-alerts:9104
+          - worker-content:9105
+        labels:
+          service: forex-ai-workers

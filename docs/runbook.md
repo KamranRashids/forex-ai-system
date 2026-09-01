@@ -55,8 +55,18 @@ docker exec forex-ai-redis-1 redis-cli ttl lock:orchestrator
   - `worker_heartbeat_age_seconds{role=...}`
   - `staleness_breach_count`, `staleness_max_age_seconds`
   - `http_requests_total`, standard request duration histograms
-- **Prometheus:** http://localhost:9090 — targets → `forex-ai-api`
+- **Worker metrics (per-process Prometheus exporters):** ports 9101–9105
+  (`worker-ingest:9101`, `worker-agents:9102`, `worker-orchestrator:9103`,
+  `worker-alerts:9104`, `worker-content:9105`)
+  - `forex_worker_up{worker=...}` — 1 if that worker process is alive/looping
+  - `forex_worker_heartbeat_timestamp_seconds{worker=...}` — last loop pulse
+  - `forex_worker_cycles_total{worker=...}` / `forex_worker_errors_total{worker=...}`
+  - Container-level liveness is a separate `python /app/app/worker_healthcheck.py`
+    probe per worker (see §4.4).
+- **Prometheus:** http://localhost:9090 — targets → `forex-ai-api` and the
+  `forex-ai-workers` job (5 worker exporters)
   - `up{job="forex-ai-api"}`; `worker_up` (all 4 roles should = 1)
+  - `forex_worker_up` (all 5 workers should = 1)
 - **Grafana:** http://localhost:3000 (admin / admin)
   - "Runtime Overview v0" dashboard: worker up/age, staleness, HTTP rate/latency
 

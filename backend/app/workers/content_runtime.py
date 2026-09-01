@@ -30,6 +30,7 @@ from app.data.providers.content_base import ContentProviderError
 from app.data.providers.factory import build_calendar, build_news
 from app.db.session import get_redis_client, get_sessionmaker
 from app.monitor.heartbeat import WorkerHeartbeat, heartbeat_ttl_for_loop
+from app.monitor.worker_metrics import start_worker_metrics
 
 logger = structlog.stdlib.get_logger(__name__)
 
@@ -52,6 +53,7 @@ async def run_content_worker(settings: Settings | None = None) -> None:
         ),
     )
     shutdown = ShutdownCoordinator()
+    worker_metrics = start_worker_metrics("content")
 
     logger.warning(
         "SAFE MODE ACTIVE: paper trading only. Live order execution is not implemented anywhere.",
@@ -63,7 +65,13 @@ async def run_content_worker(settings: Settings | None = None) -> None:
     try:
         while not shutdown.should_stop:
             await heartbeat.touch()
-            await _cycle(session_factory, resolved, calendar, news)
+            worker_metrics.mark_heartbeat()
+            try:
+                await _cycle(session_factory, resolved, calendar, news)
+            except Exception:
+                worker_metrics.error()
+                raise
+            worker_metrics.cycle()
             await _sleep(min(resolved.news_poll_seconds, resolved.calendar_poll_seconds))
     finally:
         await heartbeat.clear()
