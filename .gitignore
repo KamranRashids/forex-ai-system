@@ -35,6 +35,14 @@ next-env.d.ts
 .DS_Store
 Thumbs.db
 
+# --- TLS certificates / keys (never commit) ----------------------
+# Staging self-signed material and any future real CA material live
+# under infra/certs/ (mounted into nginx read-only). Only the
+# README/.gitkeep may be tracked.
+infra/certs/*
+!infra/certs/.gitkeep
+!infra/certs/README.md
+
 # --- Editors / IDE -----------------------------------------------
 .idea/
 .vscode/*

@@ -187,3 +187,36 @@ async def test_rate_limit_blocks_login_flood(
             break
     assert 429 in statuses
     reset_settings_cache()
+
+
+@pytest.mark.asyncio
+async def test_spoofed_forwarded_headers_cannot_bypass_rate_limit(
+    client: httpx.AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Direct clients must not change the per-IP key by forging forwarded headers.
+
+    The test peer is not inside any trusted proxy network, so X-Real-IP /
+    X-Forwarded-For are ignored; flipping them per attempt must not evade the
+    sliding window (Phase 10 hardening).
+    """
+    from app.core.config import reset_settings_cache
+
+    monkeypatch.setenv("RATE_LIMIT_LOGIN_PER_MINUTE", "2")
+    reset_settings_cache()
+
+    await register_and_login(client, "spoof@example.com")
+    statuses = []
+    for idx in range(4):
+        resp = await client.post(
+            "/api/v1/auth/login",
+            data={"username": "spoof@example.com", "password": "wrong-password-xxxxx"},
+            headers={
+                "X-Real-IP": f"203.0.113.{10 + idx}",
+                "X-Forwarded-For": f"198.51.100.{10 + idx}",
+            },
+        )
+        statuses.append(resp.status_code)
+        if resp.status_code == 429:
+            break
+    assert 429 in statuses
+    reset_settings_cache()

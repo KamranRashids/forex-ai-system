@@ -11,6 +11,7 @@ BIN          := $(CURDIR)/$(VENV)/bin
 
 .DEFAULT_GOAL := help
 .PHONY: help dev dev-down dev-destroy prod-up prod-down logs ps \
+	backup restore \
 	backend-venv format-backend lint-backend typecheck-backend test-backend \
 	test-backend-unit test-backend-integration coverage-backend migrate-backend \
 	install-frontend lint-frontend typecheck-frontend build-frontend \
@@ -34,16 +35,26 @@ prod-up: ## Start the prod-style stack behind nginx (TLS terminated externally)
 prod-down: ## Stop the prod-style stack
 	$(COMPOSE) -f docker-compose.yml -f docker-compose.prod.yml down --remove-orphans
 
+backup: ## Create a timestamped PostgreSQL backup in backups/
+	./scripts/backup_db.sh
+
+backup-prod: ## Create a timestamped PostgreSQL backup (prod overlay)
+	./scripts/backup_db.sh prod
+
+restore: ## Restore a backup into an isolated temp DB (make restore FILE=backups/forex_ai-*.sql.gz)
+	./scripts/restore_db.sh $(FILE)
+
 logs: ## Tail logs from all services
 	$(COMPOSE) logs -f --tail=100
 
 ps: ## Show container status and health
 	$(COMPOSE) ps
 
-backend-venv: ## Create backend/.venv and install runtime + dev dependencies
+backend-venv: ## Create backend/.venv from the hashed dev lock (reproducible)
 	python3 -m venv $(VENV)
 	$(BIN)/pip install --upgrade pip
-	$(BIN)/pip install -e './$(BACKEND_DIR)[dev]'
+	$(BIN)/pip install --require-hashes -r '$(BACKEND_DIR)/requirements-dev.lock'
+	$(BIN)/pip install --no-deps -e './$(BACKEND_DIR)'
 
 format-backend: ## Format backend code with ruff
 	cd $(BACKEND_DIR) && $(BIN)/ruff format .

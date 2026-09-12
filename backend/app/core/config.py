@@ -9,6 +9,7 @@ and covered by the SAFE MODE regression suite.
 
 from __future__ import annotations
 
+import ipaddress
 from functools import lru_cache
 from typing import Final, Literal
 
@@ -70,6 +71,16 @@ class Settings(BaseSettings):
     rate_limit_login_per_minute: int = Field(default=10, gt=0)
     rate_limit_register_per_minute: int = Field(default=5, gt=0)
     rate_limit_refresh_per_minute: int = Field(default=30, gt=0)
+
+    # --- Trusted reverse proxy (Phase 10) ---------------------------------------
+    #: Comma-separated CIDRs/addresses of proxies we trust to supply forwarded
+    #: client-IP headers (X-Real-IP / X-Forwarded-For) for rate limiting and
+    #: audit logging. Empty by default: when the request does not come through a
+    #: trusted proxy, the immediate socket peer is used and forwarded headers are
+    #: ignored, so a direct/untrusted client can never spoof its identity. The
+    #: production overlay (docker-compose.prod.yml) pins the default network
+    #: subnet and sets this to that subnet, where only our NGINX edge lives.
+    trusted_proxies: str = ""
 
     # --- Market data (Phase 2) ---------------------------------------------------
     #: Provider-independent ingestion (ADR-0003). Only "synthetic" needs no
@@ -264,6 +275,18 @@ class Settings(BaseSettings):
     @property
     def cors_origin_list(self) -> list[str]:
         return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
+
+    @property
+    def trusted_proxy_cidrs(
+        self,
+    ) -> list[ipaddress.IPv4Network | ipaddress.IPv6Network]:
+        """Parsed upstream networks allowed to supply forwarded client IPs."""
+        cidrs: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
+        for raw in self.trusted_proxies.split(","):
+            cidr = raw.strip()
+            if cidr:
+                cidrs.append(ipaddress.ip_network(cidr))
+        return cidrs
 
     @property
     def cookie_secure(self) -> bool:

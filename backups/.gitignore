@@ -1,0 +1,4 @@
+# Backups directory — contents are NEVER committed to Git.
+*
+!.gitignore
+!.gitkeep

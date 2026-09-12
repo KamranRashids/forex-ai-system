@@ -1,4 +1,9 @@
-name: Docker build
+name: Docker image build
+
+# Least-privilege: this workflow only reads the repository and builds local
+# images. It never pushes images, tags, or writes packages/issues.
+permissions:
+  contents: read
 
 on:
   pull_request:
@@ -13,13 +18,42 @@ jobs:
   backend-image:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Build backend prod image
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Build backend production image
         run: docker build --target prod -t forex-ai-api:${{ github.sha }} ./backend
+
+      # Container image audit. Policy (docs/phase10-ci-security.md §4): scans
+      # the EXACT locally-built prod image (not a network ref) with
+      # --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed. Findings that
+      # are documented exceptions live in .trivyignore (audit F-02/F-03/F-04/
+      # F-05, with justifications). Any new HIGH/CRITICAL finding fails the
+      # build. Trivy is pinned by digest to 0.61.1 (the version the audit used).
+      - name: Scan backend image (Trivy)
+        run: |
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$PWD/.trivyignore:/.trivyignore" \
+            aquasec/trivy@sha256:91bcccab7cb503127b0d792db7c652c4e556c9ff30eeb0908b6ae1980d7727ad image \
+            --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed \
+            --ignorefile /.trivyignore --quiet \
+            forex-ai-api:${{ github.sha }}
 
   frontend-image:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Build frontend prod image
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Build frontend production image
         run: docker build --target prod -t forex-ai-web:${{ github.sha }} ./frontend
+
+      # See backend-image scan step for policy.
+      - name: Scan frontend image (Trivy)
+        run: |
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "$PWD/.trivyignore:/.trivyignore" \
+            aquasec/trivy@sha256:91bcccab7cb503127b0d792db7c652c4e556c9ff30eeb0908b6ae1980d7727ad image \
+            --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed \
+            --ignorefile /.trivyignore --quiet \
+            forex-ai-web:${{ github.sha }}

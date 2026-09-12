@@ -1,6 +1,6 @@
 {
   "name": "forex-ai-frontend",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "private": true,
   "scripts": {
     "dev": "next dev",
@@ -10,9 +10,10 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "next": "^15.1.6",
+    "next": "^15.5.25",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "sharp": "^0.35.4"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.2.0",

@@ -1,0 +1,38 @@
+# Forex AI System — Trivy vulnerability exceptions (2026-09-11)
+#
+# Policy: CI (docker-build.yml) scans the exact locally-built production images
+# with `trivy image --exit-code 1 --severity HIGH,CRITICAL --ignore-unfixed`.
+# Each entry below is a DOCUMENTED EXCEPTION (justification in audit F-02–F-05
+# and docs/phase10-ci-security.md §9). Every line requires a documented entry in
+# docs/dependency-security-audit.md. Do not add entries silently — extend only
+# with a tracked justification and a removal condition.
+#
+# To remove an entry: confirm the underlying fix has shipped (base image rebuild,
+# upstream patch, or module removal) and that the new scan produces 0 findings for
+# that ID.
+
+# --- F-04: RESOLVED (2026-09-11, OpenSSL 3.5.8-r0) ---
+# CVE-2026-14456 REMOVED — cleared by targeted OpenSSL package upgrade
+# (libcrypto3/libssl3/openssl 3.5.7-r0 → 3.5.8-r0) in the frontend prod stage
+# (frontend/Dockerfile). See docs/phase10-base-image-security.md §7.
+
+# --- F-05: npm CLI vendored deps in base image (not app dependencies) ---
+# brace-expansion/ip-address/tar live in /usr/local/lib/node_modules/npm/ (npm
+# v11.19.0 shipped inside node:24-alpine). Not in /app; runtime `node server.js`
+# never executes npm. No app-level fix — cleared only by upstream node:24-alpine
+# npm refresh or removing npm from the image (docs/phase10-remaining-dependency-findings.md §1).
+CVE-2026-14257
+CVE-2026-69152
+CVE-2026-69192
+CVE-2026-73566
+
+# --- F-02: PostCSS (build-time CSS emission only, not shipped to the browser) ---
+# postcss@8.4.31 is transitive via next@15.5.25; CSS emission is ephemeral at
+# build time. Cleared by upstream patch or next bump.
+CVE-2026-45623
+CVE-2026-73646
+
+# --- F-03: RESOLVED (2026-09-11, sharp 0.35.4) ---
+# GHSA-f88m-g3jw-g9cj / GHSA-rgj7-g3m4-5g8c REMOVED — sharp upgraded from 0.34.5
+# to ^0.35.4 (direct dependency, in Next's declared range). Raw rescan shows both
+# advisories gone. See docs/phase10-sharp-remediation.md.

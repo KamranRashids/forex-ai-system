@@ -6,7 +6,53 @@
 # Differences vs dev: optimized multi-stage images, no source bind mounts,
 # no host DB/Redis ports, NGINX reverse proxy in front of api + web.
 # TLS termination at nginx is finalized in Phase 10.
+#
+# RESOURCE LIMITS (Phase 10 M5)
+#   Limits/reservations are provisional, NOT benchmark-derived. Values are
+#   informed by live RSS/SO observation of the same workload in the dev stack
+#   (2026-09-11: api ~170MB, workers ~90-100MB each, postgres ~60MB,
+#   redis ~67MB, prometheus ~32MB, grafana ~48MB, web ~40MB) plus ~3-4x
+#   headroom for spikes and startup peaks. Memory limits are hard caps
+#   (defence against OOM-kill of neighbouring containers); reservations are
+#   soft hints only (best-effort on a single host). The dev configuration in
+#   docker-compose.yml is intentionally left untouched.
 # ============================================================================
+
+x-limits-api: &limits-api
+  resources:
+    limits:
+      memory: 512M
+      cpus: "1.0"
+    reservations:
+      memory: 128M
+      cpus: "0.25"
+
+x-limits-worker: &limits-worker
+  resources:
+    limits:
+      memory: 512M
+      cpus: "1.0"
+    reservations:
+      memory: 128M
+      cpus: "0.25"
+
+x-limits-db: &limits-db
+  resources:
+    limits:
+      memory: 1024M
+      cpus: "2.0"
+    reservations:
+      memory: 256M
+      cpus: "0.25"
+
+x-limits-low: &limits-low
+  resources:
+    limits:
+      memory: 256M
+      cpus: "0.5"
+    reservations:
+      memory: 32M
+      cpus: "0.05"
 
 services:
   api:
@@ -15,25 +61,100 @@ services:
     volumes: []
     environment:
       APP_ENV: prod
-    ports: []
+      # Only our NGINX edge (running inside the pinned default subnet) may
+      # supply forwarded client-IP headers. The API refuses to honour
+      # X-Real-IP / X-Forwarded-For from any other peer (see app/api/deps.py).
+      TRUSTED_PROXIES: "172.28.0.0/16"
+      # Browser Origin allowlist (CORS + WSS origin check). Must include the
+      # https origin clients reach the edge under; same-origin XHR is fine,
+      # but browsers send Origin on WebSocket handshakes even same-origin.
+      CORS_ORIGINS: ${CORS_ORIGINS:-https://localhost}
+    # Remove ANY host exposure inherited from the base (dev) Compose file.
+    # `!override []` (compose spec) clears the base list — plain `ports: []`
+    # does NOT merge (Compose appends lists; see docs/phase10-tls-audit.md §3).
+    ports: !override []
+    deploy: *limits-api
 
   web:
     build:
       target: prod
+      args:
+        NEXT_PUBLIC_API_URL: ""
+        NEXT_PUBLIC_WS_URL: ""
     volumes: []
     environment:
       NODE_ENV: production
-    ports: []
+    ports: !override []
+    deploy: *limits-api
+
+  worker-ingest:
+    build:
+      target: prod
+    volumes: []
+    deploy: *limits-worker
+
+  worker-agents:
+    build:
+      target: prod
+    volumes: []
+    deploy: *limits-worker
+
+  worker-content:
+    build:
+      target: prod
+    volumes: []
+    deploy: *limits-worker
+
+  worker-orchestrator:
+    build:
+      target: prod
+    volumes: []
+    deploy: *limits-worker
+
+  worker-alerts:
+    build:
+      target: prod
+    volumes: []
+    deploy: *limits-worker
+
+  postgres:
+    ports: !override []
+    deploy: *limits-db
+
+  redis:
+    ports: !override []
+    deploy: *limits-low
+
+  prometheus:
+    ports: !override []
+    deploy: *limits-low
+
+  grafana:
+    ports: !override []
+    deploy: *limits-low
 
   nginx:
     image: nginx:1.27-alpine
     restart: unless-stopped
     ports:
+      # The ONLY host-exposed services: HTTPS edge + HTTP->HTTPS redirect.
+      - "${NGINX_HTTPS_PORT:-443}:443"
       - "${NGINX_HTTP_PORT:-80}:80"
     volumes:
       - ./infra/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      # Staging self-signed material; real CA certs replace these later.
+      - ./infra/certs:/etc/nginx/certs:ro
     depends_on:
       api:
         condition: service_healthy
       web:
         condition: service_healthy
+    deploy: *limits-low
+
+networks:
+  default:
+    # Pinned subnet: TRUSTED_PROXIES is scoped to this range so the API can
+    # distinguish our proxy peers (and only them) from any external client.
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16

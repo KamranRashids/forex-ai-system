@@ -1,9 +1,11 @@
-# Runbook — forex-ai-system Runtime Operations (Phase 7)
+# Runbook — forex-ai-system Runtime Operations
 
 Operational guidance for the Dockerized backend runtime: health checks,
 observability access, and the recovery actions for the worker processes.
 
-**Scope:** Phase 7 monitoring + runtime hardening. Everything here is safe-mode
+**Scope:** Phase 7 monitoring + runtime hardening, extended in Phase 10 with
+backup/restore (§7) and the production overlay (TLS edge, resource limits), and in
+Phase 12 with per-process worker metrics. Everything here is safe-mode
 paper/analysis only (`TRADING_MODE=safe`); no live execution exists.
 
 ---
@@ -15,11 +17,13 @@ paper/analysis only (`TRADING_MODE=safe`); no live execution exists.
 | `postgres` | Primary DB (candles, signals, backtests) |
 | `redis` | Cache, staleness keys, worker heartbeats, orchestrator lock |
 | `api` | FastAPI app; `/system/status`, `/metrics`, `/docs` |
+| `web` | Next.js dashboard (frontend, port 3000) |
 | `worker-ingest` | Candle/trend ingest + staleness check |
 | `worker-agents` | Runs technical/regime/fundamental/sentiment agents |
 | `worker-content` | Slow content pipeline (300s loop, TTL 900s) |
 | `worker-orchestrator` | Single-owner batch orchestrator (token-guarded lock) |
-| `prometheus` | Scrapes `api:8000/metrics` for runtime observability |
+| `worker-alerts` | Durable alerts pipeline + WS feed |
+| `prometheus` | Scrapes `api:8000/metrics` + per-worker exporters for runtime observability |
 | `grafana` | Dashboards (Runtime Overview v0) |
 
 All workers run `restart: unless-stopped`.
@@ -67,7 +71,7 @@ docker exec forex-ai-redis-1 redis-cli ttl lock:orchestrator
   `forex-ai-workers` job (5 worker exporters)
   - `up{job="forex-ai-api"}`; `worker_up` (all 4 roles should = 1)
   - `forex_worker_up` (all 5 workers should = 1)
-- **Grafana:** http://localhost:3000 (admin / admin)
+- **Grafana:** http://localhost:3001 (admin / admin — dev default; rotate before wider use)
   - "Runtime Overview v0" dashboard: worker up/age, staleness, HTTP rate/latency
 
 ---
@@ -126,3 +130,19 @@ docker logs --tail 200 forex-ai-worker-orchestrator-1
 ## 6. Safe Mode Notes
 - `TRADING_MODE` only accepts `safe`; there is **no executor / no live order
   path**. These recovery actions affect analysis/batch orchestration only.
+
+---
+
+## 7. Backup and Restore
+
+- **Create a backup:** `make backup` (dev) or `make backup-prod` (prod overlay),
+  or `./scripts/backup_db.sh [prod]`. The script uses the postgres container's own
+  environment (`pg_dump`), so no credentials are embedded.
+- **Output:** timestamped gzipped SQL + `.sha256` checksum under `backups/`
+  (gitignored — never commit backups).
+- **Restore safely (isolated):** `make restore FILE=backups/forex_ai-*.sql.gz`
+  (or `./scripts/restore_db.sh backups/forex_ai-*.sql.gz [prod]`). It restores into a
+  temporary `forex_ai_restore_*` database, verifies schema + Alembic state, then drops
+  the temporary database. It **never** overwrites the live `forex_ai` database.
+- Full procedure, storage, security, retention, and recovery guidance:
+  `docs/phase10-backup-restore.md`.

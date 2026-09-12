@@ -85,9 +85,7 @@ async def test_candles_honors_time_window(client: Any, db_sessionmaker: Any) -> 
 
 async def test_candles_unknown_symbol_is_404(client: Any, db_sessionmaker: Any) -> None:
     headers = await _auth_headers(client)
-    resp = await client.get(
-        "/api/v1/market/candles?symbol=XXXYYY&timeframe=M15", headers=headers
-    )
+    resp = await client.get("/api/v1/market/candles?symbol=XXXYYY&timeframe=M15", headers=headers)
     assert resp.status_code == 404
     body = resp.json()
     assert body["type"].endswith("/problems/not_found")
@@ -96,9 +94,7 @@ async def test_candles_unknown_symbol_is_404(client: Any, db_sessionmaker: Any) 
 async def test_candles_invalid_timeframe_is_422(client: Any, db_sessionmaker: Any) -> None:
     await _seed_candles(db_sessionmaker)
     headers = await _auth_headers(client)
-    resp = await client.get(
-        "/api/v1/market/candles?symbol=EURUSD&timeframe=M50", headers=headers
-    )
+    resp = await client.get("/api/v1/market/candles?symbol=EURUSD&timeframe=M50", headers=headers)
     assert resp.status_code == 422
 
 
@@ -120,9 +116,7 @@ async def test_prices_latest_requires_auth(client: Any) -> None:
     assert resp.status_code == 401
 
 
-async def test_prices_latest_returns_cached_quotes(
-    client: Any, fake_redis: Any
-) -> None:
+async def test_prices_latest_returns_cached_quotes(client: Any, fake_redis: Any) -> None:
     await fake_redis.set(
         latest_price_key("EURUSD"),
         json.dumps(
@@ -148,9 +142,7 @@ async def test_prices_latest_returns_cached_quotes(
     assert rows["GBPUSD"]["bucket_start"] is None
 
 
-async def test_prices_latest_skips_malformed_and_missing(
-    client: Any, fake_redis: Any
-) -> None:
+async def test_prices_latest_skips_malformed_and_missing(client: Any, fake_redis: Any) -> None:
     await fake_redis.set(latest_price_key("EURUSD"), "not-json")
     await fake_redis.set(latest_price_key("GBPUSD"), json.dumps({"symbol": "GBPUSD"}))
     headers = await _auth_headers(client)
@@ -169,9 +161,7 @@ async def test_prices_latest_symbol_filter(client: Any, fake_redis: Any) -> None
         json.dumps({"symbol": "GBPUSD", "price": 1.2711, "synthetic": False}),
     )
     headers = await _auth_headers(client)
-    resp = await client.get(
-        "/api/v1/market/prices/latest?symbol=EURUSD", headers=headers
-    )
+    resp = await client.get("/api/v1/market/prices/latest?symbol=EURUSD", headers=headers)
     assert resp.status_code == 200
     rows = resp.json()
     assert [r["symbol"] for r in rows] == ["EURUSD"]

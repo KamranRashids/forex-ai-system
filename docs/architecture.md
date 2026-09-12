@@ -1,7 +1,8 @@
 # Architecture Overview
 
-> Status: scaffold (Phase 0). The full proposal lives in [`IMPLEMENTATION_PLAN.md`](../IMPLEMENTATION_PLAN.md) §3;
-> this page summarizes what exists today and where it is heading.
+> Status: current — updated for the `v0.1.0` release (2026-09-12). Describes the
+> implemented system. The full proposal lives in [`IMPLEMENTATION_PLAN.md`](../IMPLEMENTATION_PLAN.md) §3;
+> phase status is tracked in [`PROJECT_STATUS.md`](../PROJECT_STATUS.md).
 
 ## System at a glance
 

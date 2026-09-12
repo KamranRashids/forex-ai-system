@@ -1,7 +1,12 @@
 # Multi-Agent Forex AI System — Implementation Plan
 
-> Status: **PROPOSED — awaiting approval** · Version: 1.0 · Date: 2026-08-24
-> Target directory: `/home/kamran/projects/forex-ai-system` (currently **empty** — verified, no files will be overwritten)
+> Status: **APPROVED & IMPLEMENTED (Phases 0–10 and 12)** · Plan version: 1.0 · Date: 2026-08-24
+> Target directory: `/home/kamran/projects/forex-ai-system`
+> Implementation status (2026-09-12): Phases 0–10 complete; **Phase 10 accepted**
+> (`docs/phase10-final-audit.md`); Phase 12 (observability & data-source truth) complete;
+> **Phase 11 — Documentation & GitHub Readiness (v0.1.0 release prep) in progress**
+> (`docs/phase11-release-audit.md`, `PROJECT_STATUS.md`). Real-CA TLS and HSTS remain
+> blocked until a production domain exists (see Phase 10 below).
 
 ---
 
@@ -735,16 +740,18 @@ Each phase ends with working, reviewed, tested software. Estimates assume one ex
 
 ## 17. Approval Checklist
 
-- [ ] Architecture (§3) approved
-- [ ] Tech stack (§4) approved
-- [ ] Directory structure (§5) approved
-- [ ] Dependency list (§6) approved
-- [ ] Docker layout (§7) approved
-- [ ] Env vars & defaults (§8) approved
-- [ ] Schema sketch (§9) approved
-- [ ] Security & SAFE MODE approach (§2, §12) approved
-- [ ] Testing strategy (§13) approved
-- [ ] Phasing & estimates (§14) approved
-- [ ] Open questions (§16) answered
+- [x] Architecture (§3) approved
+- [x] Tech stack (§4) approved
+- [x] Directory structure (§5) approved
+- [x] Dependency list (§6) approved
+- [x] Docker layout (§7) approved
+- [x] Env vars & defaults (§8) approved
+- [x] Schema sketch (§9) approved
+- [x] Security & SAFE MODE approach (§2, §12) approved
+- [x] Testing strategy (§13) approved
+- [x] Phasing & estimates (§14) approved
+- [x] Open questions (§16) answered
 
-> **No application code has been written.** Upon approval, work begins at Phase 0.
+> **Status (2026-09-12):** this plan is implemented. Phases 0–10 and 12 are complete;
+> Phase 10 was accepted (`docs/phase10-final-audit.md`). Phase 11 (release preparation)
+> is in progress and tracked in `PROJECT_STATUS.md` and `docs/phase11-release-audit.md`.
