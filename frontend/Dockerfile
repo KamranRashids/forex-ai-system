@@ -4,7 +4,7 @@
 # Targets: deps -> dev | builder -> prod
 # ============================================================================
 
-FROM node:24-alpine AS deps
+FROM node:26-alpine AS deps
 WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm ci
@@ -27,7 +27,7 @@ ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL \
 COPY . .
 RUN npm run build
 
-FROM node:24-alpine AS prod
+FROM node:26-alpine AS prod
 WORKDIR /app
 # F-04 remediation (CVE-2026-14456, HIGH): the base image's baked OpenSSL
 # (libcrypto3/libssl3 3.5.7-r0) predates the Alpine v3.24 fix. Upgrade only the
