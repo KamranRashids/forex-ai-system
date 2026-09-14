@@ -11,22 +11,34 @@ The orchestrator is the decision pipeline's driver:
 - for each (symbol, timeframe) calls :class:`DecisionEngine` (fuse -> risk
   gate -> persist) and publishes ``decision.emitted`` to ``decisions.stream``.
 
+(13C) When a ``broker_factory`` is injected, a decision freshly persisted as
+``PAPER`` is wired inline (Option A) into the paper-only ``LedgerBroker`` in
+the *same* transaction: decision + risk evaluation + order + position commit
+together. ANALYSIS and BLOCKED decisions never reach the broker, and replayed
+(collision) decisions never create a second order — the decision's unique
+identity + ``uq_orders_paper_decision_id`` + one-OPEN-per-symbol constraints
+make redelivery idempotent.
+
 SAFE MODE (L3): output is ANALYSIS / PAPER / BLOCKED paper-intent decisions.
-There is no broker, order, or execution capability anywhere in this worker.
+The only broker surface is the paper-only gateway (:class:`PaperBrokerGateway`);
+the wiring exposes no live order-routing shape. Without a factory the worker
+remains decision-only.
 """
 
 from __future__ import annotations
 
 import time
 import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any, Protocol
 
 import structlog
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from app.agents.base import Direction
 from app.bus.events import Event
 from app.bus.publisher import EventPublisher
 from app.bus.topics import (
@@ -43,6 +55,12 @@ from app.data.market_config import get_market_config
 from app.data.risk_config import load_risk_params
 from app.decisions.engine import DecideResult, DecisionAction, DecisionEngine, OrchParams
 from app.models.decision import DecisionStatus
+
+if TYPE_CHECKING:
+    from app.broker.ledger import LedgerBroker
+    from app.models.decision import DecisionRow
+    from app.models.paper_ledger import PaperOrderRow
+    from app.models.risk_evaluation import RiskEvaluationRow
 
 logger = structlog.stdlib.get_logger(__name__)
 
@@ -70,6 +88,77 @@ def _orch_params(settings: Settings) -> OrchParams:
     )
 
 
+class PaperBrokerGateway(Protocol):
+    """Minimal broker surface the 13C decision wiring depends on (paper-only).
+
+    Structural: exposes only the paper entry seam used here. It intentionally
+    has no submit/route/place/live-order member — a live-execution shape cannot
+    be passed through this wiring. The only implementation is ``LedgerBroker``,
+    which fills through the deterministic ``PaperBroker`` math.
+    """
+
+    async def open_at_next_open(
+        self,
+        *,
+        symbol: str,
+        timeframe: str,
+        direction: Direction,
+        ref_price: float,
+        ts: datetime,
+        units: float,
+        decision_id: uuid.UUID | None = None,
+        stop_loss: float | None = None,
+        take_profit: float | None = None,
+    ) -> PaperOrderRow | None: ...
+
+
+async def _wire_paper_decision(
+    broker: PaperBrokerGateway | None,
+    *,
+    result: DecideResult,
+    decision: DecisionRow | None,
+    risk_eval: RiskEvaluationRow | None,
+) -> PaperOrderRow | None:
+    """Route a freshly persisted PAPER decision into the paper ledger (13C).
+
+    Guards (fail closed):
+    - only a decision this writer just stored (``created``) and that is
+      explicitly ``PAPER`` may proceed — ANALYSIS and BLOCKED are no-ops;
+    - the persisted risk evaluation must carry a valid paper sizing
+      (``position_size_units`` and ``price``); missing sizing never opens a
+      position (the risk gate is the single sizing authority — nothing here
+      re-sizes or re-approves risk);
+    - rejection by the broker (position already open / FLAT / non-positive
+      units) returns ``None`` without raising.
+
+    SAFE MODE: ``broker`` is a paper-only gateway; this function cannot create
+    anything but a paper order row fenced behind an approved PAPER decision.
+    """
+    if broker is None or result.status != DecisionStatus.PAPER or not result.created:
+        return None
+    if decision is None or risk_eval is None:
+        return None
+    if risk_eval.position_size_units is None or risk_eval.price is None:
+        logger.debug(
+            "paper_order_skipped_missing_sizing", symbol=result.symbol, timeframe=result.timeframe
+        )
+        return None
+    direction = result.direction
+    if direction is None:
+        return None
+    return await broker.open_at_next_open(
+        symbol=result.symbol,
+        timeframe=result.timeframe,
+        direction=direction,
+        ref_price=float(risk_eval.price),
+        ts=result.bucket_ts,
+        units=float(risk_eval.position_size_units),
+        decision_id=decision.id,
+        stop_loss=None if risk_eval.stop_loss is None else float(risk_eval.stop_loss),
+        take_profit=None if risk_eval.take_profit is None else float(risk_eval.take_profit),
+    )
+
+
 class OrchestratorWorker:
     """Consumes signal triggers and drives the decision engine."""
 
@@ -82,6 +171,7 @@ class OrchestratorWorker:
         settings: Settings | None = None,
         now: datetime | None = None,
         lock_ttl_seconds: int = LOCK_TTL_SECONDS,
+        broker_factory: Callable[[AsyncSession], LedgerBroker] | None = None,
     ) -> None:
         self._sessions = session_factory
         self._redis = redis
@@ -91,6 +181,10 @@ class OrchestratorWorker:
         self._engine_cls = DecisionEngine
         self._lock_ttl = max(1, int(lock_ttl_seconds))
         self._owner_token: str = ""
+        #: (13C) Paper-only broker seam, bound per session inside ``process_pair``.
+        #: ``None`` keeps the worker decision-only (default; used by existing
+        #: tests and safe while no ledger wiring is desired).
+        self._broker_factory = broker_factory
 
     @property
     def lock_ttl(self) -> int:
@@ -190,6 +284,8 @@ class OrchestratorWorker:
                 crafts=_orch_params(self._settings),
                 risk=risk,
             )
+            if result.action == DecisionAction.PERSIST:
+                await self._sponsor_paper_order(session, result=result)
             await session.commit()
 
         ORCH_DECISION_LATENCY.observe(time.perf_counter() - started)
@@ -198,6 +294,82 @@ class OrchestratorWorker:
             if result.status == DecisionStatus.BLOCKED:
                 await self._emit_risk_brake_alert(result)
         return result
+
+    async def _sponsor_paper_order(self, session: AsyncSession, *, result: DecideResult) -> None:
+        """Persist the paper order for a PAPER decision (13C).
+
+        Runs inside the same transaction as the decision itself: the decision
+        row, risk evaluation, order, and position all commit (or all roll back)
+        together. On any broker/database failure the exception propagates so the
+        surrounding transaction is discarded — an order is never committed while
+        the decision that sponsors it is rolled back.
+        """
+        if self._broker_factory is None:
+            return
+        if result.status != DecisionStatus.PAPER or not result.created:
+            return
+        decision, risk_eval = await self._load_decision_payload(session, result=result)
+        broker = self._broker_factory(session)
+        # Rehydrate the in-memory paper state from the persisted ledger before
+        # filling so the one-open-position-per-symbol guard sees any existing
+        # position and cleanly rejects instead of tripping the DB constraint.
+        await broker.restore_state()
+        order = await _wire_paper_decision(
+            broker, result=result, decision=decision, risk_eval=risk_eval
+        )
+        if order is not None:
+            logger.info(
+                "paper_order_created",
+                decision_id=str(order.decision_id),
+                symbol=order.symbol,
+                timeframe=order.timeframe,
+                order_id=str(order.id),
+                side=order.side,
+            )
+        else:
+            logger.info(
+                "paper_order_not_created",
+                symbol=result.symbol,
+                timeframe=result.timeframe,
+                status=result.status.value,
+            )
+
+    async def _load_decision_payload(
+        self, session: AsyncSession, *, result: DecideResult
+    ) -> tuple[DecisionRow | None, RiskEvaluationRow | None]:
+        """Load the decision + risk evaluation this writer just persisted."""
+        from sqlalchemy import select
+
+        from app.models.decision import DecisionRow
+        from app.models.risk_evaluation import RiskEvaluationRow
+
+        decision = (
+            (
+                await session.execute(
+                    select(DecisionRow).where(
+                        DecisionRow.symbol == result.symbol,
+                        DecisionRow.timeframe == result.timeframe,
+                        DecisionRow.bucket_ts == result.bucket_ts,
+                    )
+                )
+            )
+            .scalars()
+            .first()
+        )
+        risk_eval = (
+            (
+                await session.execute(
+                    select(RiskEvaluationRow).where(
+                        RiskEvaluationRow.symbol == result.symbol,
+                        RiskEvaluationRow.timeframe == result.timeframe,
+                        RiskEvaluationRow.bucket_ts == result.bucket_ts,
+                    )
+                )
+            )
+            .scalars()
+            .first()
+        )
+        return decision, risk_eval
 
     async def _emit_risk_brake_alert(self, result: DecideResult) -> None:
         """Surface a risk-gate veto as a durable ``alert.risk_brake`` (Phase 8)."""

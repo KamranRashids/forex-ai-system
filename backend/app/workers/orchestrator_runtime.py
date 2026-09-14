@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import TYPE_CHECKING
 
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -11,6 +12,9 @@ from app.core.config import Settings, get_settings
 from app.core.shutdown import ShutdownCoordinator
 from app.db.session import get_redis_client, get_sessionmaker
 from app.workers.orchestrator_worker import SCAN_EVERY_CYCLES, OrchestratorWorker
+
+if TYPE_CHECKING:
+    from app.broker.ledger import LedgerBroker
 
 logger = structlog.stdlib.get_logger(__name__)
 
@@ -38,6 +42,19 @@ async def _emit_orchestrator_alert(publisher: object, subject: str, detail: str)
         logger.debug("orchestrator_alert_publish_failed", subject=subject)
 
 
+def _paper_ledger_broker(session: AsyncSession) -> LedgerBroker:
+    """Build the paper-only broker over the caller's session (13C wiring).
+
+    Uses the *same* ``AsyncSession`` as the decision transaction, so decision,
+    risk evaluation, order, and position persist atomically. This is the only
+    broker implementation wired in SAFE MODE — a live broker cannot exist here.
+    """
+    from app.broker.ledger import LedgerBroker
+    from app.broker.store import PostgresLedgerStore
+
+    return LedgerBroker(store=PostgresLedgerStore(session=session))
+
+
 async def run_orchestrator(settings: Settings | None = None) -> None:
     """Drive the orchestrator until cancelled (single active instance).
 
@@ -61,6 +78,7 @@ async def run_orchestrator(settings: Settings | None = None) -> None:
         redis=redis,
         publisher=publisher,
         settings=resolved,
+        broker_factory=_paper_ledger_broker,
     )
 
     shutdown = ShutdownCoordinator()

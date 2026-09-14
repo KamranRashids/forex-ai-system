@@ -34,30 +34,46 @@ _NOW = _BUCKET + timedelta(minutes=15)
 
 
 async def _seed_decision_inputs(
-    db_sessionmaker: Any, *, tech_direction: str = "LONG", atr14: float = 0.005, close: float = 1.1
+    db_sessionmaker: Any,
+    *,
+    tech_direction: str = "LONG",
+    fund_direction: str = "LONG",
+    senti_direction: str = "LONG",
+    tech_conf: str = "0.8",
+    fund_conf: str = "0.7",
+    senti_conf: str = "0.7",
+    atr14: float = 0.005,
+    close: float = 1.1,
+    with_candle: bool = True,
 ) -> None:
-    """Insert an instrument, one candle (for price) and 4 deterministic signals."""
+    """Insert an instrument, a candle (for price) and 4 deterministic signals.
+
+    Defaults reproduce the historical LONG + full-coverage seed that the risk
+    gate turns into a PAPER decision. Overriding directions/confidences changes
+    the fused outcome deterministically (see the 13C decision-wiring tests).
+    """
     from app.data.ingest import seed_instruments
     from app.models.agent_signal import AgentSignalRow
     from app.models.candle import CandleRow
 
     async with db_sessionmaker() as session:
         inst = (await seed_instruments(session, [SYMBOL]))[SYMBOL]
-        session.add(
-            CandleRow(
-                instrument_id=inst.id,
-                timeframe=TF,
-                ts=_BUCKET,
-                open=Decimal(str(close)),
-                high=Decimal(str(close)),
-                low=Decimal(str(close)),
-                close=Decimal(str(close)),
-                volume=100,
-                source="synthetic",
-                complete=True,
-                tf_minutes=15,
+        if with_candle:
+            session.add(
+                CandleRow(
+                    instrument_id=inst.id,
+                    timeframe=TF,
+                    ts=_BUCKET,
+                    open=Decimal(str(close)),
+                    high=Decimal(str(close)),
+                    low=Decimal(str(close)),
+                    close=Decimal(str(close)),
+                    volume=100,
+                    source="synthetic",
+                    complete=True,
+                    tf_minutes=15,
+                )
             )
-        )
         session.add_all(
             [
                 AgentSignalRow(
@@ -66,7 +82,7 @@ async def _seed_decision_inputs(
                     symbol=SYMBOL,
                     timeframe=TF,
                     direction=tech_direction,
-                    confidence=Decimal("0.8"),
+                    confidence=Decimal(tech_conf),
                     bucket_ts=_BUCKET,
                     features={"atr14": atr14, "regime": "trending"},
                     rationale="t",
@@ -87,8 +103,8 @@ async def _seed_decision_inputs(
                     agent_version="1",
                     symbol=SYMBOL,
                     timeframe=TF,
-                    direction="LONG",
-                    confidence=Decimal("0.7"),
+                    direction=fund_direction,
+                    confidence=Decimal(fund_conf),
                     bucket_ts=_BUCKET,
                     features={},
                     rationale="f",
@@ -98,8 +114,8 @@ async def _seed_decision_inputs(
                     agent_version="1",
                     symbol=SYMBOL,
                     timeframe=TF,
-                    direction="LONG",
-                    confidence=Decimal("0.7"),
+                    direction=senti_direction,
+                    confidence=Decimal(senti_conf),
                     bucket_ts=_BUCKET,
                     features={},
                     rationale="s",
@@ -157,6 +173,50 @@ def _orch_worker(db_sessionmaker: Any, fake_redis: Any) -> Any:
         redis=fake_redis,
         publisher=RedisEventPublisher(fake_redis, producer_name="orchestrator"),
     )
+
+
+def _orch_worker_with_broker(db_sessionmaker: Any, fake_redis: Any) -> Any:
+    """Orchestrator wired exactly like production (13C broker seam)."""
+    from app.bus.publisher import RedisEventPublisher
+    from app.workers.orchestrator_worker import OrchestratorWorker
+
+    def broker_factory(session: Any) -> Any:
+        from app.broker.ledger import LedgerBroker
+        from app.broker.store import PostgresLedgerStore
+
+        return LedgerBroker(store=PostgresLedgerStore(session=session))
+
+    return OrchestratorWorker(
+        session_factory=db_sessionmaker,
+        redis=fake_redis,
+        publisher=RedisEventPublisher(fake_redis, producer_name="orchestrator"),
+        broker_factory=broker_factory,
+    )
+
+
+async def _count_ledger_rows(db_sessionmaker: Any) -> tuple[int, int]:
+    """Return (orders, open positions) for the seeded symbol."""
+    from app.models.paper_ledger import PaperOrderRow, PaperPositionRow, PaperPositionStatus
+
+    async with db_sessionmaker() as session:
+        orders = int(
+            await session.scalar(
+                select(func.count())
+                .select_from(PaperOrderRow)
+                .where(PaperOrderRow.symbol == SYMBOL)
+            )
+        )
+        positions = int(
+            await session.scalar(
+                select(func.count())
+                .select_from(PaperPositionRow)
+                .where(
+                    PaperPositionRow.symbol == SYMBOL,
+                    PaperPositionRow.status == PaperPositionStatus.OPEN.value,
+                )
+            )
+        )
+    return orders, positions
 
 
 async def _role_headers(
@@ -390,6 +450,154 @@ async def test_orchestrator_replay_trigger_is_idempotent(
     second = await worker.poll_once()
     assert second.errors == 0
     assert await _count_decisions(db_sessionmaker) == 1
+
+
+# ---------------------------------------------------------------------------
+# Phase 13C: PAPER decision -> LedgerBroker wiring (paper orders/positions)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_paper_decision_creates_order_and_position(
+    db_sessionmaker: Any, fake_redis: Any
+) -> None:
+    """Full pipeline: PAPER decision persists 1 FILLED order + 1 OPEN position.
+
+    The order must carry the sponsoring decision's id, proving decision ->
+    ledger lineage in one atomic transaction.
+    """
+    from app.models.decision import DecisionRow
+    from app.models.paper_ledger import PaperOrderRow, PaperPositionRow
+
+    await _seed_decision_inputs(db_sessionmaker)
+    await _config_pair(db_sessionmaker, actor="admin@example.com")
+    worker = _orch_worker_with_broker(db_sessionmaker, fake_redis)
+    await worker.ensure_groups()
+    await _emit_signal_trigger(fake_redis, SYMBOL, TF)
+
+    batch = await worker.poll_once()
+
+    assert batch.errors == 0
+    assert batch.processed >= 1
+    assert await _count_decisions(db_sessionmaker) == 1
+
+    orders, positions = await _count_ledger_rows(db_sessionmaker)
+    assert orders == 1
+    assert positions == 1
+
+    async with db_sessionmaker() as session:
+        decision = (
+            (
+                await session.execute(
+                    select(DecisionRow).where(
+                        DecisionRow.symbol == SYMBOL, DecisionRow.timeframe == TF
+                    )
+                )
+            )
+            .scalars()
+            .first()
+        )
+        order = (
+            (await session.execute(select(PaperOrderRow).where(PaperOrderRow.symbol == SYMBOL)))
+            .scalars()
+            .first()
+        )
+        position = (
+            (
+                await session.execute(
+                    select(PaperPositionRow).where(PaperPositionRow.symbol == SYMBOL)
+                )
+            )
+            .scalars()
+            .first()
+        )
+
+    assert decision is not None and decision.status == "PAPER"
+    assert order is not None
+    assert order.side == "LONG"
+    assert order.decision_id == decision.id  # 13C lineage
+    assert position is not None
+    assert position.order_id == order.id
+
+
+@pytest.mark.asyncio
+async def test_analysis_decision_never_creates_order(db_sessionmaker: Any, fake_redis: Any) -> None:
+    """Low-agreement seed -> ANALYSIS; no paper order may ever appear."""
+    await _seed_decision_inputs(
+        db_sessionmaker,
+        tech_conf="0.2",
+        fund_direction="SHORT",
+        fund_conf="0.9",
+        senti_direction="SHORT",
+        senti_conf="0.9",
+    )
+    await _config_pair(db_sessionmaker, actor="admin@example.com")
+    worker = _orch_worker_with_broker(db_sessionmaker, fake_redis)
+    await worker.ensure_groups()
+    await _emit_signal_trigger(fake_redis, SYMBOL, TF)
+
+    batch = await worker.poll_once()
+
+    assert batch.errors == 0
+    assert batch.processed >= 1
+    assert batch.status_count.get("ANALYSIS", 0) >= 1
+    assert await _count_decisions(db_sessionmaker) == 1
+    assert await _count_ledger_rows(db_sessionmaker) == (0, 0)
+
+
+@pytest.mark.asyncio
+async def test_blocked_decision_never_creates_order(db_sessionmaker: Any, fake_redis: Any) -> None:
+    """No candle -> no price -> risk fails closed; BLOCKED, never an order."""
+    from app.models.decision import DecisionRow
+
+    await _seed_decision_inputs(db_sessionmaker, with_candle=False)
+    await _config_pair(db_sessionmaker, actor="admin@example.com")
+    worker = _orch_worker_with_broker(db_sessionmaker, fake_redis)
+    await worker.ensure_groups()
+    await _emit_signal_trigger(fake_redis, SYMBOL, TF)
+
+    batch = await worker.poll_once()
+
+    assert batch.errors == 0
+    assert batch.status_count.get("BLOCKED", 0) >= 1
+    assert await _count_ledger_rows(db_sessionmaker) == (0, 0)
+
+    async with db_sessionmaker() as session:
+        decision = (
+            (
+                await session.execute(
+                    select(DecisionRow).where(
+                        DecisionRow.symbol == SYMBOL, DecisionRow.timeframe == TF
+                    )
+                )
+            )
+            .scalars()
+            .first()
+        )
+    assert decision is not None and decision.status == "BLOCKED"
+
+
+@pytest.mark.asyncio
+async def test_duplicate_trigger_creates_only_one_order(
+    db_sessionmaker: Any, fake_redis: Any
+) -> None:
+    """Re-delivered trigger: second pass is a replay (created=False) -> 1 order."""
+    await _seed_decision_inputs(db_sessionmaker)
+    await _config_pair(db_sessionmaker, actor="admin@example.com")
+    worker = _orch_worker_with_broker(db_sessionmaker, fake_redis)
+    await worker.ensure_groups()
+
+    await _emit_signal_trigger(fake_redis, SYMBOL, TF)
+    first = await worker.poll_once()
+    assert first.processed >= 1
+    assert await _count_decisions(db_sessionmaker) == 1
+    assert await _count_ledger_rows(db_sessionmaker) == (1, 1)
+
+    await _emit_signal_trigger(fake_redis, SYMBOL, TF)
+    second = await worker.poll_once()
+    assert second.errors == 0
+    assert await _count_decisions(db_sessionmaker) == 1
+    assert await _count_ledger_rows(db_sessionmaker) == (1, 1)
 
 
 # ---------------------------------------------------------------------------
