@@ -177,6 +177,19 @@ export default function AlertsPage() {
             {CONN_LABEL[connState]}
           </span>
 
+          <a
+            href="/portfolio"
+            className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-semibold text-slate-300 transition-colors hover:border-slate-500 hover:text-white"
+          >
+            Portfolio
+          </a>
+          <a
+            href="/backtests"
+            className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-semibold text-slate-300 transition-colors hover:border-slate-500 hover:text-white"
+          >
+            Backtests
+          </a>
+
           <button
             type="button"
             onClick={handleLogout}
