@@ -1,4 +1,4 @@
-"""SQLAlchemy models (P1-2 id; P3 signals; P4 content; P5 risk; P6 backtest; P8 alerts)."""
+"""SQLAlchemy models (P1-2 id; P3-6 signals/content/risk/backtest; P8 alerts; P13 paper ledger)."""
 
 from app.models.agent_signal import AgentSignalRow
 from app.models.alert_event import AlertEvent, severity_for
@@ -14,6 +14,14 @@ from app.models.decision import DecisionDirection, DecisionRow, DecisionStatus
 from app.models.economic_event import EconomicEvent
 from app.models.instrument import Instrument
 from app.models.news_item import NewsItem
+from app.models.paper_ledger import (
+    AccountSnapshotRow,
+    PaperOrderRow,
+    PaperOrderStatus,
+    PaperOrderType,
+    PaperPositionRow,
+    PaperPositionStatus,
+)
 from app.models.provider_health import ProviderHealth
 from app.models.refresh_token import RefreshToken
 from app.models.risk_evaluation import RiskEvaluationRow
@@ -22,6 +30,7 @@ from app.models.system_setting import SystemSetting
 from app.models.user import User, UserRole
 
 __all__ = [
+    "AccountSnapshotRow",
     "AgentSignalRow",
     "AlertEvent",
     "AuditLog",
@@ -36,6 +45,11 @@ __all__ = [
     "EconomicEvent",
     "Instrument",
     "NewsItem",
+    "PaperOrderRow",
+    "PaperOrderStatus",
+    "PaperOrderType",
+    "PaperPositionRow",
+    "PaperPositionStatus",
     "ProviderHealth",
     "RefreshToken",
     "RiskEvaluationRow",

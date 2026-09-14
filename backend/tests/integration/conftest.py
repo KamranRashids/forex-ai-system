@@ -54,6 +54,9 @@ TABLES: tuple[str, ...] = (
     "backtest_trades",
     "backtest_equity",
     "alert_events",
+    "orders_paper",
+    "positions",
+    "account_snapshots",
 )
 
 

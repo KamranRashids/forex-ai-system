@@ -123,6 +123,11 @@ omit = [
     # orchestrator_sim, report, models) is unit-tested against the gate.
     "app/backtest/repository.py",
     "app/backtest/service.py",
+    # Phase 13, Phase A paper-ledger DB shell: PG-specific persistence is
+    # verified behaviorally by the integration suite; the pure broker
+    # orchestration in app/broker/ledger.py IS unit-tested against an in-memory
+    # store.
+    "app/broker/store.py",
 ]
 
 [tool.coverage.report]

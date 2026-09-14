@@ -73,7 +73,7 @@ async def test_migration_creates_content_tables_matching_models(pg_engine: Any) 
 
 @pytest.mark.asyncio
 async def test_alembic_head_is_content_migration(pg_engine: Any) -> None:
-    """The DB is migrated to head, which includes revision 0007 (Phase 8)."""
+    """The DB is migrated to head, which includes revision 0008 (Phase 13, Phase A)."""
     from pathlib import Path
 
     from alembic.config import Config as AlembicConfig
@@ -86,7 +86,7 @@ async def test_alembic_head_is_content_migration(pg_engine: Any) -> None:
     async with pg_engine.connect() as conn:
         current = (await conn.execute(text("SELECT version_num FROM alembic_version"))).scalar_one()
     assert current in heads
-    assert current == "0007"  # Phase 8 alert_events is the current head
+    assert current == "0008"  # Phase 13, Phase A paper-ledger migration is the current head
 
 
 @pytest.mark.asyncio
