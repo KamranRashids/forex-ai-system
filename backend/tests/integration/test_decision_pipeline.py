@@ -194,6 +194,31 @@ def _orch_worker_with_broker(db_sessionmaker: Any, fake_redis: Any) -> Any:
     )
 
 
+async def _add_fill_bar_candle(db_sessionmaker: Any, *, close: float = 1.1) -> None:
+    """Insert the deterministic fill-bar candle (decision bucket + M15)."""
+    from app.data.ingest import seed_instruments
+    from app.models.candle import CandleRow
+
+    async with db_sessionmaker() as session:
+        inst = (await seed_instruments(session, [SYMBOL]))[SYMBOL]
+        session.add(
+            CandleRow(
+                instrument_id=inst.id,
+                timeframe=TF,
+                ts=_BUCKET + timedelta(minutes=15),
+                open=Decimal(str(close)),
+                high=Decimal(str(close)),
+                low=Decimal(str(close)),
+                close=Decimal(str(close)),
+                volume=100,
+                source="synthetic",
+                complete=True,
+                tf_minutes=15,
+            )
+        )
+        await session.commit()
+
+
 async def _count_ledger_rows(db_sessionmaker: Any) -> tuple[int, int]:
     """Return (orders, open positions) for the seeded symbol."""
     from app.models.paper_ledger import PaperOrderRow, PaperPositionRow, PaperPositionStatus
@@ -453,7 +478,7 @@ async def test_orchestrator_replay_trigger_is_idempotent(
 
 
 # ---------------------------------------------------------------------------
-# Phase 13C: PAPER decision -> LedgerBroker wiring (paper orders/positions)
+# Phase 13C + 13D: PAPER decision -> PENDING order -> lifecycle fill
 # ---------------------------------------------------------------------------
 
 
@@ -461,10 +486,10 @@ async def test_orchestrator_replay_trigger_is_idempotent(
 async def test_paper_decision_creates_order_and_position(
     db_sessionmaker: Any, fake_redis: Any
 ) -> None:
-    """Full pipeline: PAPER decision persists 1 FILLED order + 1 OPEN position.
-
-    The order must carry the sponsoring decision's id, proving decision ->
-    ledger lineage in one atomic transaction.
+    """PAPER decision persists a PENDING order; the lifecycle fills it at the
+    deterministic next-bar open (decision bucket + M15), producing the OPEN
+    position. The order carries the sponsoring decision's id, proving decision
+    -> ledger lineage in one atomic transaction.
     """
     from app.models.decision import DecisionRow
     from app.models.paper_ledger import PaperOrderRow, PaperPositionRow
@@ -481,9 +506,10 @@ async def test_paper_decision_creates_order_and_position(
     assert batch.processed >= 1
     assert await _count_decisions(db_sessionmaker) == 1
 
+    # Trigger wiring submits PENDING only — no position until the lifecycle.
     orders, positions = await _count_ledger_rows(db_sessionmaker)
     assert orders == 1
-    assert positions == 1
+    assert positions == 0
 
     async with db_sessionmaker() as session:
         decision = (
@@ -502,6 +528,25 @@ async def test_paper_decision_creates_order_and_position(
             .scalars()
             .first()
         )
+
+    assert decision is not None and decision.status == "PAPER"
+    assert order is not None
+    assert order.side == "LONG"
+    assert order.status == "PENDING"
+    assert order.decision_id == decision.id  # 13C lineage
+
+    # Close the fill bar and drive the lifecycle: the order fills at OPEN.
+    await _add_fill_bar_candle(db_sessionmaker)
+    result = await worker.process_lifecycle()
+    assert result is not None
+    assert result.fills == 1
+    assert result.errors == 0
+
+    orders, positions = await _count_ledger_rows(db_sessionmaker)
+    assert orders == 1
+    assert positions == 1
+
+    async with db_sessionmaker() as session:
         position = (
             (
                 await session.execute(
@@ -511,13 +556,9 @@ async def test_paper_decision_creates_order_and_position(
             .scalars()
             .first()
         )
-
-    assert decision is not None and decision.status == "PAPER"
-    assert order is not None
-    assert order.side == "LONG"
-    assert order.decision_id == decision.id  # 13C lineage
     assert position is not None
     assert position.order_id == order.id
+    assert position.side == "LONG"
 
 
 @pytest.mark.asyncio
@@ -591,13 +632,18 @@ async def test_duplicate_trigger_creates_only_one_order(
     first = await worker.poll_once()
     assert first.processed >= 1
     assert await _count_decisions(db_sessionmaker) == 1
+    assert await _count_ledger_rows(db_sessionmaker) == (1, 0)  # PENDING, not yet filled
+
+    await _add_fill_bar_candle(db_sessionmaker)
+    result = await worker.process_lifecycle()
+    assert result is not None and result.fills == 1
     assert await _count_ledger_rows(db_sessionmaker) == (1, 1)
 
     await _emit_signal_trigger(fake_redis, SYMBOL, TF)
     second = await worker.poll_once()
     assert second.errors == 0
     assert await _count_decisions(db_sessionmaker) == 1
-    assert await _count_ledger_rows(db_sessionmaker) == (1, 1)
+    assert await _count_ledger_rows(db_sessionmaker) == (1, 1)  # no duplicate order
 
 
 # ---------------------------------------------------------------------------

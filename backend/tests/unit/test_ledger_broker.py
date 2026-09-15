@@ -1,16 +1,22 @@
 """Unit tests: LedgerBroker pure orchestration over an in-memory ledger store.
 
 These run DB-free (unit gate) using an in-memory ``LedgerStore`` so the broker's
-orchestration — fill persistence, SL/TP exit persistence, equity snapshots, and
-state restore — is covered without PostgreSQL. Every simulated value is
+orchestration — pending submit/fill, SL/TP exit persistence, equity snapshots,
+and state restore — is covered without PostgreSQL. Every simulated value is
 produced by the same ``PaperBroker`` math the backtester uses; the parity tests
 here assert the ledger results equal a standalone ``PaperBroker``.
 
-(Phase 13, Phase A)
+Entry is deferred (Phase 13D): a decision submits a PENDING order and
+``fill_pending`` fills it at the next bar's open. The ``_open`` helper performs
+submit + fill so the existing exit/equity/restore assertions keep their
+original timeline.
+
+(Phase 13, Phase A, Phase 13D)
 """
 
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -41,6 +47,24 @@ class InMemoryStore:
 
     async def save_order(self, order: PaperOrderRow) -> None:
         self.orders.append(order)
+
+    async def update_order(self, order: PaperOrderRow) -> None:
+        for i, existing in enumerate(self.orders):
+            if existing.id == order.id:
+                self.orders[i] = order
+                return
+
+    async def list_pending_orders(self) -> list[PaperOrderRow]:
+        return [
+            order
+            for order in self.orders
+            if order.status == PaperOrderStatus.PENDING.value
+        ]
+
+    async def get_decision_bucket(
+        self, decision_id: uuid.UUID | None
+    ) -> datetime | None:
+        return _T0 if decision_id is not None else None
 
     async def save_position(self, position: PaperPositionRow) -> None:
         self.positions.append(position)
@@ -81,7 +105,8 @@ async def _open(
     stop_loss: float | None = None,
     take_profit: float | None = None,
 ) -> PaperOrderRow | None:
-    return await broker.open_at_next_open(
+    """Submit a PENDING order and immediately fill it (deferred-entry path)."""
+    order = await broker.submit_paper_order(
         symbol=symbol,
         timeframe="H1",
         direction=direction,
@@ -91,6 +116,11 @@ async def _open(
         stop_loss=stop_loss,
         take_profit=take_profit,
     )
+    if order is None:
+        return None
+    pos = await broker.fill_pending(order, open_price=price, ts=_T0)
+    assert pos is not None, "fill_pending failed unexpectedly"
+    return order
 
 
 async def test_open_persists_order_and_position():
@@ -294,3 +324,110 @@ async def test_restore_state_on_empty_ledger_keeps_defaults():
     assert float(state.equity) == pytest.approx(10_000.0, abs=1e-9)
     assert state.open_positions.positions == []
     assert state.trades == []
+
+
+async def test_submit_persists_pending_order_without_position():
+    store = InMemoryStore()
+    broker = LedgerBroker(store=store, seed=7)
+
+    order = await broker.submit_paper_order(
+        symbol="EURUSD",
+        timeframe="H1",
+        direction=Direction.LONG,
+        ref_price=1.0850,
+        ts=_T0,
+        units=10_000.0,
+        stop_loss=1.0750,
+        take_profit=1.0950,
+    )
+
+    assert order is not None
+    assert order.status == PaperOrderStatus.PENDING.value
+    assert order.filled_price is None
+    assert float(order.costs) == 0.0
+    assert await store.get_open_position("EURUSD") is None
+    assert not store.positions
+    assert len(store.orders) == 1
+    assert broker.pending == [order]
+
+
+async def test_fill_pending_rejects_non_pending_order():
+    store = InMemoryStore()
+    broker = LedgerBroker(store=store, seed=7)
+
+    order = await broker.submit_paper_order(
+        symbol="EURUSD",
+        timeframe="H1",
+        direction=Direction.LONG,
+        ref_price=1.0850,
+        ts=_T0,
+        units=10_000.0,
+    )
+    assert order is not None
+    order.status = PaperOrderStatus.CANCELLED.value  # superseded downstream
+
+    assert await broker.fill_pending(order, open_price=1.0850, ts=_T0) is None
+    assert await store.get_open_position("EURUSD") is None
+
+
+async def test_cancel_pending_persists_cancelled():
+    store = InMemoryStore()
+    broker = LedgerBroker(store=store, seed=7)
+
+    order = await broker.submit_paper_order(
+        symbol="EURUSD",
+        timeframe="H1",
+        direction=Direction.LONG,
+        ref_price=1.0850,
+        ts=_T0,
+        units=10_000.0,
+    )
+    assert order is not None
+    assert await broker.cancel_pending(order, reason="missing_bar") is not None
+
+    assert order.status == PaperOrderStatus.CANCELLED.value
+    assert broker.pending == []
+    assert store.orders[0].status == PaperOrderStatus.CANCELLED.value
+    assert await store.get_open_position("EURUSD") is None
+
+
+async def test_restore_state_rebuilds_pending_queue_oldest_first():
+    store = InMemoryStore()
+    first = LedgerBroker(store=store, seed=3)
+    recent = await first.submit_paper_order(
+        symbol="EURUSD",
+        timeframe="H1",
+        direction=Direction.LONG,
+        ref_price=1.0850,
+        ts=_T0,
+        units=10_000.0,
+        decision_id=uuid.uuid4(),
+    )
+    older = await first.submit_paper_order(
+        symbol="GBPUSD",
+        timeframe="H1",
+        direction=Direction.SHORT,
+        ref_price=1.2700,
+        ts=_T0,
+        units=5_000.0,
+        decision_id=uuid.uuid4(),
+    )
+    assert recent is not None and older is not None
+    recent.created_at = _T1
+    older.created_at = _T0
+
+    restored = LedgerBroker(store=store, seed=3)
+    await restored.restore_state()
+
+    assert [o.symbol for o in restored.pending] == ["GBPUSD", "EURUSD"]
+    # A redelivered decision for one of the pending orders is rejected.
+    dup = await restored.submit_paper_order(
+        symbol="EURUSD",
+        timeframe="H1",
+        direction=Direction.LONG,
+        ref_price=1.0850,
+        ts=_T0,
+        units=10_000.0,
+        decision_id=recent.decision_id,
+    )
+    assert dup is None

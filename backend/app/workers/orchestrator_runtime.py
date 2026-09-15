@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import TYPE_CHECKING
 
 import structlog
@@ -125,6 +126,10 @@ async def run_orchestrator(settings: Settings | None = None) -> None:
     )
 
     cycle: int = 0
+    #: (13D) Paper-lifecycle cadence: drive the lifecycle whenever the monitor
+    #: interval has elapsed (first pass runs immediately on startup).
+    last_lifecycle: float = 0.0
+    lifecycle_interval = max(1, int(resolved.paper_monitor_interval_seconds))
     try:
         while not shutdown.should_stop:
             await heartbeat.touch()
@@ -154,6 +159,14 @@ async def run_orchestrator(settings: Settings | None = None) -> None:
             except Exception as exc:  # noqa: BLE001 - survive transient bus failures
                 worker_metrics.error()
                 logger.exception("orchestrator_poll_failed", error=str(exc))
+
+            if time.monotonic() - last_lifecycle >= lifecycle_interval:
+                try:
+                    await worker.process_lifecycle()
+                    last_lifecycle = time.monotonic()
+                except Exception as exc:  # noqa: BLE001 - never kill the loop
+                    worker_metrics.error()
+                    logger.exception("orchestrator_paper_lifecycle_failed", error=str(exc))
 
             cycle += 1
             if cycle % SCAN_EVERY_CYCLES == 0:

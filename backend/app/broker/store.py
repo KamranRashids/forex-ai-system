@@ -13,12 +13,16 @@ live-execution path anywhere in this module.
 
 from __future__ import annotations
 
+import uuid
+from datetime import datetime
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.paper_ledger import (
     AccountSnapshotRow,
     PaperOrderRow,
+    PaperOrderStatus,
     PaperPositionRow,
     PaperPositionStatus,
 )
@@ -33,6 +37,34 @@ class PostgresLedgerStore:
     async def save_order(self, order: PaperOrderRow) -> None:
         self._session.add(order)
         await self._session.flush()
+
+    async def update_order(self, order: PaperOrderRow) -> None:
+        await self._session.flush()
+
+    async def list_pending_orders(self) -> list[PaperOrderRow]:
+        """Pending (not yet filled/cancelled) orders, oldest first."""
+        result = await self._session.execute(
+            select(PaperOrderRow)
+            .where(PaperOrderRow.status == PaperOrderStatus.PENDING.value)
+            .order_by(PaperOrderRow.created_at, PaperOrderRow.id)
+        )
+        return list(result.scalars().all())
+
+    async def get_decision_bucket(self, decision_id: uuid.UUID | None) -> datetime | None:
+        """The bucket start of the decision that sponsors ``decision_id``.
+
+        PENDING order rows do not carry their decision's bucket; the lifecycle
+        needs ``decision.bucket_ts + tf_seconds`` to derive the deterministic
+        fill bar, so the store resolves it from the sponsoring decision.
+        """
+        if decision_id is None:
+            return None
+        from app.models.decision import DecisionRow
+
+        ts = await self._session.scalar(
+            select(DecisionRow.bucket_ts).where(DecisionRow.id == decision_id)
+        )
+        return ts
 
     async def save_position(self, position: PaperPositionRow) -> None:
         self._session.add(position)

@@ -171,6 +171,20 @@ class Settings(BaseSettings):
     #: Notional account equity used for paper risk/sizing math.
     risk_paper_equity: float = Field(default=100_000.0, gt=0.0)
 
+    # --- Paper lifecycle (Phase 13D) ----------------------------------------------
+    #: Cadence (seconds) of the paper-lifecycle monitor step inside the
+    #: orchestrator loop: how often active paper units are checked for newly
+    #: closed bars and their frontiers advanced.
+    paper_monitor_interval_seconds: int = Field(default=60, ge=1)
+    #: Per-cycle per-unit catch-up throttle: at most this many ascending
+    #: unit-bars are processed in one cycle. This is a throttle, never a skip —
+    #: outstanding bars are processed in later cycles (tracked by the
+    #: ``paper_catchup_depth_remaining`` gauge).
+    paper_catchup_max_bars: int = Field(default=24, ge=1)
+    #: Minimum spacing (seconds) between persisted account snapshots; ``None``
+    #: (default) writes one snapshot per state-changing unit-bar (ts-deduped).
+    paper_snapshot_interval_seconds: int | None = Field(default=None, ge=1)
+
     @field_validator("trading_mode", mode="before")
     @classmethod
     def _enforce_safe_mode(cls, value: object) -> str:

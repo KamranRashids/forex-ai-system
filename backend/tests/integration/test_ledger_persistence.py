@@ -142,7 +142,7 @@ async def test_ledger_broker_round_trip_across_sessions(db_sessionmaker) -> None
     snap: AccountSnapshotRow | None = None
     async with db_sessionmaker() as session:
         broker = LedgerBroker(store=PostgresLedgerStore(session=session), seed=9)
-        order = await broker.open_at_next_open(
+        order = await broker.submit_paper_order(
             symbol="GBPUSD",
             timeframe="H1",
             direction=Direction.LONG,
@@ -152,6 +152,9 @@ async def test_ledger_broker_round_trip_across_sessions(db_sessionmaker) -> None
             stop_loss=1.2600,
         )
         assert order is not None
+        assert order.status == "PENDING"
+        position = await broker.fill_pending(order, open_price=1.2700, ts=_T0)
+        assert position is not None
         trade = await broker.evaluate_exit(symbol="GBPUSD", close=1.2550, ts=_T1)
         assert trade is not None
         assert trade.exit_reason == "stop_loss"

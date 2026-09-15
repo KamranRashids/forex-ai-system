@@ -13,25 +13,34 @@ The orchestrator is the decision pipeline's driver:
 
 (13C) When a ``broker_factory`` is injected, a decision freshly persisted as
 ``PAPER`` is wired inline (Option A) into the paper-only ``LedgerBroker`` in
-the *same* transaction: decision + risk evaluation + order + position commit
+the *same* transaction: decision + risk evaluation + PENDING order commit
 together. ANALYSIS and BLOCKED decisions never reach the broker, and replayed
 (collision) decisions never create a second order — the decision's unique
 identity + ``uq_orders_paper_decision_id`` + one-OPEN-per-symbol constraints
 make redelivery idempotent.
 
+(13D) The PENDING order is filled by ``process_lifecycle()`` at its
+deterministic next-bar open (§7): per active (symbol, timeframe) unit it
+reconciles the ledger, cancels orders whose fill bar never closed, then drives
+``PaperLifecycle.process_unit_bar`` per closed bar (restore -> fill/flip at
+OPEN -> SL/TP at CLOSE -> mark -> snapshot -> commit), throttled to
+``paper_catchup_max_bars`` per unit per cycle — ascending, never a skip. The
+cycle runs under the same lock-guarded loop at ``paper_monitor_interval_seconds``
+in ``orchestrator_runtime.py`` (single writer, per-unit-bar atomicity).
+
 SAFE MODE (L3): output is ANALYSIS / PAPER / BLOCKED paper-intent decisions.
 The only broker surface is the paper-only gateway (:class:`PaperBrokerGateway`);
 the wiring exposes no live order-routing shape. Without a factory the worker
-remains decision-only.
+remains decision-only (and the lifecycle is a no-op).
 """
 
 from __future__ import annotations
 
 import time
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Protocol
 
 import structlog
@@ -39,6 +48,13 @@ from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.agents.base import Direction
+from app.broker.lifecycle import (
+    CANCEL_MISSING_BAR,
+    Bar,
+    PaperLifecycle,
+    catchup_window,
+    missing_bar_candidates,
+)
 from app.bus.events import Event
 from app.bus.publisher import EventPublisher
 from app.bus.topics import (
@@ -50,14 +66,25 @@ from app.core.metrics import (
     ORCH_CYCLE_COUNT,
     ORCH_DECISION_LATENCY,
     ORCH_DECISIONS_REPLAYED,
+    PAPER_CATCHUP_BAR_BURST,
+    PAPER_CATCHUP_BOUND_HITS_TOTAL,
+    PAPER_CATCHUP_DEPTH_REMAINING,
+    PAPER_LIFECYCLE_CYCLES_TOTAL,
+    PAPER_LIFECYCLE_ERRORS_TOTAL,
+    PAPER_OPEN_POSITIONS,
+    PAPER_ORDERS_CANCELLED_TOTAL,
+    PAPER_RECONCILE_FAILS_TOTAL,
 )
 from app.data.market_config import get_market_config
+from app.data.repository import get_or_create_instrument, last_closed_ts, load_candles
 from app.data.risk_config import load_risk_params
 from app.decisions.engine import DecideResult, DecisionAction, DecisionEngine, OrchParams
 from app.models.decision import DecisionStatus
 
 if TYPE_CHECKING:
     from app.broker.ledger import LedgerBroker
+    from app.broker.lifecycle import PendingCandidate
+    from app.broker.positions import Position
     from app.models.decision import DecisionRow
     from app.models.paper_ledger import PaperOrderRow
     from app.models.risk_evaluation import RiskEvaluationRow
@@ -78,6 +105,22 @@ class OrchBatchResult:
     status_count: dict[str, int] = field(default_factory=dict)
 
 
+@dataclass(slots=True)
+class PaperLifecycleResult:
+    """Aggregate counters for one ``process_lifecycle`` pass (Phase 13D)."""
+
+    units: int = 0
+    bars: int = 0
+    fills: int = 0
+    exits: int = 0
+    superseded: int = 0
+    cancelled_missing: int = 0
+    snapshots: int = 0
+    depth_remaining: int = 0
+    errors: int = 0
+    reconcile_ok: bool = True
+
+
 def _orch_params(settings: Settings) -> OrchParams:
     return OrchParams(
         coverage_min=settings.orch_min_agent_coverage,
@@ -92,12 +135,13 @@ class PaperBrokerGateway(Protocol):
     """Minimal broker surface the 13C decision wiring depends on (paper-only).
 
     Structural: exposes only the paper entry seam used here. It intentionally
-    has no submit/route/place/live-order member — a live-execution shape cannot
-    be passed through this wiring. The only implementation is ``LedgerBroker``,
-    which fills through the deterministic ``PaperBroker`` math.
+    has no route/place/live-order member — a live-execution shape cannot be
+    passed through this wiring. The only implementation is ``LedgerBroker``,
+    which persists a PENDING order (no fill) the lifecycle resolves at the next
+    bar's open.
     """
 
-    async def open_at_next_open(
+    async def submit_paper_order(
         self,
         *,
         symbol: str,
@@ -125,14 +169,17 @@ async def _wire_paper_decision(
     - only a decision this writer just stored (``created``) and that is
       explicitly ``PAPER`` may proceed — ANALYSIS and BLOCKED are no-ops;
     - the persisted risk evaluation must carry a valid paper sizing
-      (``position_size_units`` and ``price``); missing sizing never opens a
-      position (the risk gate is the single sizing authority — nothing here
+      (``position_size_units`` and ``price``); missing sizing never creates an
+      order (the risk gate is the single sizing authority — nothing here
       re-sizes or re-approves risk);
-    - rejection by the broker (position already open / FLAT / non-positive
-      units) returns ``None`` without raising.
+    - rejection by the broker (same-side position already open / FLAT /
+      non-positive units) returns ``None`` without raising.
 
-    SAFE MODE: ``broker`` is a paper-only gateway; this function cannot create
-    anything but a paper order row fenced behind an approved PAPER decision.
+    Phase 13D: the persistent artifact is a **PENDING** paper order linked to
+    the decision (``requested_price`` = the risk reference price, no fill, no
+    position). The lifecycle fills it at the deterministic next-bar open.
+    SAFE MODE: ``broker`` is a paper-only gateway; this function can create
+    nothing but a paper order row fenced behind an approved PAPER decision.
     """
     if broker is None or result.status != DecisionStatus.PAPER or not result.created:
         return None
@@ -146,7 +193,7 @@ async def _wire_paper_decision(
     direction = result.direction
     if direction is None:
         return None
-    return await broker.open_at_next_open(
+    return await broker.submit_paper_order(
         symbol=result.symbol,
         timeframe=result.timeframe,
         direction=direction,
@@ -296,13 +343,14 @@ class OrchestratorWorker:
         return result
 
     async def _sponsor_paper_order(self, session: AsyncSession, *, result: DecideResult) -> None:
-        """Persist the paper order for a PAPER decision (13C).
+        """Persist the paper order for a PAPER decision (13C / 13D).
 
         Runs inside the same transaction as the decision itself: the decision
-        row, risk evaluation, order, and position all commit (or all roll back)
-        together. On any broker/database failure the exception propagates so the
-        surrounding transaction is discarded — an order is never committed while
-        the decision that sponsors it is rolled back.
+        row, risk evaluation, and PENDING order all commit (or all roll back)
+        together; the OPEN position is created later by the lifecycle's fill
+        transaction. On any broker/database failure the exception propagates so
+        the surrounding transaction is discarded — an order is never committed
+        while the decision that sponsors it is rolled back.
         """
         if self._broker_factory is None:
             return
@@ -311,20 +359,22 @@ class OrchestratorWorker:
         decision, risk_eval = await self._load_decision_payload(session, result=result)
         broker = self._broker_factory(session)
         # Rehydrate the in-memory paper state from the persisted ledger before
-        # filling so the one-open-position-per-symbol guard sees any existing
-        # position and cleanly rejects instead of tripping the DB constraint.
+        # checking the submission guard so any existing same-side position is
+        # seen and the order is cleanly skipped instead of violating the keep
+        # policy (mirror of the backtest driver's fill scheduling).
         await broker.restore_state()
         order = await _wire_paper_decision(
             broker, result=result, decision=decision, risk_eval=risk_eval
         )
         if order is not None:
             logger.info(
-                "paper_order_created",
+                "paper_order_submitted",
                 decision_id=str(order.decision_id),
                 symbol=order.symbol,
                 timeframe=order.timeframe,
                 order_id=str(order.id),
                 side=order.side,
+                status=order.status,
             )
         else:
             logger.info(
@@ -333,6 +383,235 @@ class OrchestratorWorker:
                 timeframe=result.timeframe,
                 status=result.status.value,
             )
+
+    async def _emit_paper_alert(self, event_type: str, subject: str, detail: str) -> None:
+        """Best-effort durable ``alert.paper_*`` sentinel (Phase 8 publisher)."""
+        event = Event(
+            event_type=event_type,
+            payload={
+                "source": "orchestrator",
+                "severity": "warning",
+                "subject": subject,
+                "message": detail,
+            },
+            producer="orchestrator",
+            produced_at=self._now,
+        )
+        try:
+            await self._publisher.publish_alert(event)
+        except Exception:  # noqa: BLE001 - alerting must never crash the pipeline
+            logger.debug("paper_alert_publish_failed", event_type=event_type, subject=subject)
+
+    async def process_lifecycle(self) -> PaperLifecycleResult | None:
+        """Drive the paper lifecycle for every active unit (Phase 13D).
+
+        Discovery session: restore the ledger into a fresh broker, reconcile it
+        against the store (fail closed on mismatch), and derive the active
+        (symbol, timeframe) units from resolvable pending orders + open
+        positions. Then one fresh session per unit (avoids detached-entity
+        updates on the same ``PaperLifecycle`` driver): cancel pending orders
+        whose fill bar never closed (``missing_bar``), load the closed candles,
+        and process outstanding bars ascending through
+        ``PaperLifecycle.process_unit_bar`` — throttled to
+        ``paper_catchup_max_bars`` (never a skip). Commits one unit-bar
+        transaction at a time.
+
+        Returns None when no broker factory is wired (decision-only mode);
+        otherwise a per-cycle summary. Never raises: per-unit failures are
+        counted, alerted, and skipped (cycle outcome ``degraded``).
+        """
+        if self._broker_factory is None:
+            return None
+        result = PaperLifecycleResult()
+        max_bars = max(1, int(self._settings.paper_catchup_max_bars))
+        snapshot_interval = self._settings.paper_snapshot_interval_seconds
+
+        unit_list: list[tuple[str, str]] = []
+        try:
+            async with self._sessions() as session:
+                broker = self._broker_factory(session)
+                lifecycle = PaperLifecycle(store=broker.store, broker=broker)
+                await broker.restore_state()
+                if not await lifecycle.reconcile():
+                    PAPER_RECONCILE_FAILS_TOTAL.inc()
+                    result.reconcile_ok = False
+                    logger.error(
+                        "paper_lifecycle_reconcile_failed",
+                        detail="store open/pending rows disagree with the restored broker",
+                    )
+                    await self._emit_paper_alert(
+                        "alert.paper_reconcile",
+                        "paper ledger/broker reconciliation failed",
+                        "cycle aborted (fail closed)",
+                    )
+                    PAPER_LIFECYCLE_CYCLES_TOTAL.labels(outcome="reconcile_failed").inc()
+                    return result
+                units: dict[tuple[str, str], None] = {}
+                for cand in await lifecycle.pending_candidates():
+                    units[(cand.order.symbol, cand.order.timeframe)] = None
+                for pos in await broker.store.list_open_positions():
+                    units[(pos.symbol, pos.timeframe)] = None
+                unit_list = sorted(units, key=lambda u: (u[0], u[1]))
+        except Exception as exc:  # noqa: BLE001 - never kill the loop
+            PAPER_LIFECYCLE_ERRORS_TOTAL.inc()
+            logger.exception("paper_lifecycle_discovery_failed", error=str(exc))
+            return result
+
+        for symbol, timeframe in unit_list:
+            try:
+                (
+                    processed,
+                    depth,
+                    fills,
+                    exits,
+                    superseded,
+                    cancelled_missing,
+                    snapshots,
+                ) = await self._process_unit(
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    max_bars=max_bars,
+                    snapshot_interval=snapshot_interval,
+                )
+                result.units += 1
+                result.bars += processed
+                result.depth_remaining += depth
+                result.fills += fills
+                result.exits += exits
+                result.superseded += superseded
+                result.cancelled_missing += cancelled_missing
+                result.snapshots += snapshots
+                if processed:
+                    PAPER_CATCHUP_BAR_BURST.observe(processed)
+            except Exception as exc:  # noqa: BLE001 - isolate one unit's failure
+                result.errors += 1
+                PAPER_LIFECYCLE_ERRORS_TOTAL.inc()
+                logger.exception(
+                    "paper_lifecycle_unit_failed",
+                    error=str(exc),
+                    symbol=symbol,
+                    timeframe=timeframe,
+                )
+                await self._emit_paper_alert(
+                    "alert.paper_lifecycle_degraded",
+                    "paper lifecycle unit failed",
+                    f"{symbol} {timeframe}: {exc}",
+                )
+
+        try:
+            async with self._sessions() as session:
+                broker = self._broker_factory(session)
+                PAPER_OPEN_POSITIONS.set(len(await broker.store.list_open_positions()))
+        except Exception:  # noqa: BLE001 - observability must not crash the cycle
+            logger.debug("paper_open_positions_gauge_failed")
+
+        outcome = "ok" if result.errors == 0 else "degraded"
+        PAPER_LIFECYCLE_CYCLES_TOTAL.labels(outcome=outcome).inc()
+        logger.info(
+            "orchestrator_paper_lifecycle",
+            outcome=outcome,
+            units=result.units,
+            bars=result.bars,
+            fills=result.fills,
+            exits=result.exits,
+            superseded=result.superseded,
+            cancelled_missing=result.cancelled_missing,
+            snapshots=result.snapshots,
+            depth_remaining=result.depth_remaining,
+            errors=result.errors,
+        )
+        return result
+
+    async def _process_unit(
+        self,
+        *,
+        symbol: str,
+        timeframe: str,
+        max_bars: int,
+        snapshot_interval: int | None,
+    ) -> tuple[int, int, int, int, int, int, int]:
+        """One unit's lifecycle pass.
+
+        Returns ``(bars_processed, depth, fills, exits, superseded,
+        cancelled_missing, snapshots)``.
+        """
+        if self._broker_factory is None:
+            return 0, 0, 0, 0, 0, 0, 0
+        async with self._sessions() as session:
+            broker = self._broker_factory(session)
+            lifecycle = PaperLifecycle(
+                store=broker.store,
+                broker=broker,
+                snapshot_interval_seconds=snapshot_interval,
+            )
+            await broker.restore_state()
+
+            candidates = [
+                c
+                for c in await lifecycle.pending_candidates()
+                if c.order.symbol == symbol and c.order.timeframe == timeframe
+            ]
+            instrument = await get_or_create_instrument(session, symbol)
+            latest_closed = await last_closed_ts(
+                session, instrument_id=instrument.id, timeframe=timeframe
+            )
+            if latest_closed is None:
+                return 0, 0, 0, 0, 0, 0, 0
+
+            bases: list[datetime] = [
+                c.fill_stamp for c in candidates if c.fill_stamp <= latest_closed
+            ]
+            current = broker.open_for(symbol)
+            if current is not None:
+                bases.append(current.entry_ts)
+
+            in_window = await load_candles(
+                session,
+                instrument_id=instrument.id,
+                timeframe=timeframe,
+                start=min(bases) if bases else datetime.min.replace(tzinfo=UTC),
+                end=latest_closed + timedelta(seconds=1),
+                limit=100_000,
+            )
+            candles: dict[datetime, Bar] = {}
+            for row in in_window:
+                candles[row.ts] = Bar(ts=row.ts, open=float(row.open), close=float(row.close))
+
+            doomed = missing_bar_candidates(candidates, list(candles), latest_closed=latest_closed)
+            cancelled_missing = 0
+            for cand in doomed:
+                if await broker.cancel_pending(cand.order, reason=CANCEL_MISSING_BAR) is not None:
+                    cancelled_missing += 1
+                    PAPER_ORDERS_CANCELLED_TOTAL.labels(reason=CANCEL_MISSING_BAR).inc()
+            if doomed:
+                await session.commit()
+
+            stamps = _outstanding_stamps(candidates=candidates, candles=candles, current=current)
+            if not stamps:
+                return 0, 0, 0, 0, 0, cancelled_missing, 0
+
+            ordered = sorted(stamps)
+            window, depth = catchup_window(ordered, max_bars)
+            PAPER_CATCHUP_DEPTH_REMAINING.labels(symbol=symbol, timeframe=timeframe).set(depth)
+            if depth:
+                PAPER_CATCHUP_BOUND_HITS_TOTAL.inc()
+
+            processed = fills = exits = superseded = snapshots = 0
+            for ts in window:
+                unit_result = await lifecycle.process_unit_bar(
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    bar=candles[ts],
+                    candidates=candidates,
+                )
+                await session.commit()
+                processed += 1
+                fills += unit_result.filled
+                exits += unit_result.exits
+                superseded += unit_result.superseded
+                snapshots += 1 if unit_result.snapshot_written else 0
+
+            return processed, depth, fills, exits, superseded, cancelled_missing, snapshots
 
     async def _load_decision_payload(
         self, session: AsyncSession, *, result: DecideResult
@@ -499,6 +778,33 @@ def _field(fields: dict[str, str], key: str) -> str:
     if isinstance(raw, bytes):
         return raw.decode()
     return str(raw or "")
+
+
+def _outstanding_stamps(
+    *,
+    candidates: Sequence[PendingCandidate],
+    candles: Mapping[datetime, Bar],
+    current: Position | None,
+) -> set[datetime]:
+    """Closed bars this unit still owes processing to (fill bars + continuation).
+
+    Tail semantics: everything from the *earliest* anchor onward. The anchor is
+    the earliest due fill bar (a PENDING order whose fill bar has closed) or the
+    open position's entry — whichever is earlier. Because processing is
+    ascending, the bars that fall between an anchor and a later fill are
+    harmless no-ops, and a fill creates continuation bars that are already >=
+    the anchor (>= the fill bar). A fill stamp beyond the newest closed bar is
+    simply not due yet and excluded.
+    """
+    due = sorted(c.fill_stamp for c in candidates if c.fill_stamp in candles)
+    fill_anchor = due[0] if due else None
+    anchors: list[datetime] = [fill_anchor] if fill_anchor is not None else []
+    if current is not None:
+        anchors.append(current.entry_ts)
+    if not anchors:
+        return set()
+    anchor = min(anchors)
+    return {ts for ts in candles if ts >= anchor}
 
 
 def _unwrap(fields: dict[str, Any]) -> dict[str, str] | None:

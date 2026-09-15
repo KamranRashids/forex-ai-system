@@ -8,12 +8,14 @@ gateway, over an in-memory ``LedgerStore``. Guards under test:
   (ANALYSIS / BLOCKED / replays are no-ops);
 - the persisted risk evaluation is the single sizing authority — wiring never
   re-sizes and cannot manufacture a position without a risk-approved sizing;
-- broker rejection (position already open / FLAT) returns ``None`` without
-  raising; broker failure propagates so the caller rolls back the whole
-  transaction (decision + order + position consistency);
+- the broker persists a PENDING order linked to the decision (no position yet —
+  the Phase 13D lifecycle fills it at the next bar's open);
+- broker rejection (FLAT / same-side position open / duplicate decision id)
+  returns ``None`` without raising; broker failure propagates so the caller
+  rolls back the whole transaction (decision + order + position consistency);
 - the only broker surface is paper-only (no submit/route/place/live member).
 
-(Phase 13C)
+(Phase 13C / Phase 13D)
 """
 
 from __future__ import annotations
@@ -30,6 +32,7 @@ from app.models.decision import DecisionRow, DecisionStatus
 from app.models.paper_ledger import (
     AccountSnapshotRow,
     PaperOrderRow,
+    PaperOrderStatus,
     PaperPositionRow,
     PaperPositionStatus,
 )
@@ -51,6 +54,24 @@ class InMemoryStore:
 
     async def save_order(self, order: PaperOrderRow) -> None:
         self.orders.append(order)
+
+    async def update_order(self, order: PaperOrderRow) -> None:
+        for i, existing in enumerate(self.orders):
+            if existing.id == order.id:
+                self.orders[i] = order
+                return
+
+    async def list_pending_orders(self) -> list[PaperOrderRow]:
+        return [
+            order
+            for order in self.orders
+            if order.status == PaperOrderStatus.PENDING.value
+        ]
+
+    async def get_decision_bucket(
+        self, decision_id: uuid.UUID | None
+    ) -> datetime | None:
+        return _BUCKET if decision_id is not None else None
 
     async def save_position(self, position: PaperPositionRow) -> None:
         self.positions.append(position)
@@ -157,9 +178,9 @@ def _risk_eval(
 
 
 class _RaisingBroker:
-    """A broker whose fill seam always fails (simulates a DB/broker crash)."""
+    """A broker whose submit seam always fails (simulates a DB/broker crash)."""
 
-    async def open_at_next_open(
+    async def submit_paper_order(
         self,
         *,
         symbol: str,
@@ -176,7 +197,7 @@ class _RaisingBroker:
 
 
 # ---------------------------------------------------------------------------
-# PAPER creates a paper order (and the position), linked to the decision.
+# PAPER creates a PENDING order linked to the decision (no position yet).
 # ---------------------------------------------------------------------------
 
 
@@ -190,18 +211,19 @@ async def test_paper_decision_creates_order_and_position():
     )
 
     assert order is not None
+    assert order.status == PaperOrderStatus.PENDING.value
     assert order.decision_id == decision.id
     assert order.symbol == "EURUSD"
     assert order.side == "LONG"
-    assert float(order.filled_price) == pytest.approx(1.10, abs=1e-9)
+    assert order.filled_price is None  # not filled until the next bar's open
     assert float(order.units) == pytest.approx(10_000.0, abs=1e-9)
     assert float(order.stop_loss) == pytest.approx(1.09, abs=1e-9)
     assert float(order.take_profit) == pytest.approx(1.12, abs=1e-9)
+    assert float(order.costs) == 0.0  # entry cost is only deducted at the fill
 
     pos = await store.get_open_position("EURUSD")
-    assert pos is not None
-    assert pos.order_id == order.id
-    assert pos.status == PaperPositionStatus.OPEN.value
+    assert pos is None  # PENDING only — the lifecycle fills at the next open
+    assert not store.positions
 
 
 async def test_decision_id_linkage_persists_on_order():
@@ -285,7 +307,7 @@ async def test_replayed_decision_created_false_does_not_create_order():
 
 
 async def test_same_decision_id_never_creates_second_order():
-    """The broker's in-memory one-open-position guard rejects the duplicate."""
+    """A redelivered decision never persists a second pending order."""
     store = InMemoryStore()
     broker = LedgerBroker(store=store, seed=7)
     decision = _decision()
@@ -296,13 +318,14 @@ async def test_same_decision_id_never_creates_second_order():
     assert first is not None
     assert len(store.orders) == 1
 
-    # Same decision, redelivered: the open position already exists for EURUSD.
+    # Same decision, redelivered: the in-memory one-order-per-decision guard
+    # rejects the duplicate (uq_orders_paper_decision_id is the DB backstop).
     second = await _wire_paper_decision(
         broker, result=_result(), decision=decision, risk_eval=_risk_eval()
     )
     assert second is None
     assert len(store.orders) == 1
-    assert sum(1 for p in store.positions if p.status == PaperPositionStatus.OPEN.value) == 1
+    assert sum(1 for p in store.positions if p.status == PaperPositionStatus.OPEN.value) == 0
 
 
 # ---------------------------------------------------------------------------
@@ -326,22 +349,49 @@ async def test_ledger_broker_rejection_returns_none_for_flat_direction():
     assert not store.positions
 
 
-async def test_ledger_broker_rejection_returns_none_when_position_already_open():
+async def test_ledger_broker_rejection_returns_none_when_same_side_open():
     store = InMemoryStore()
     broker = LedgerBroker(store=store, seed=7)
     decision = _decision()
 
-    await _wire_paper_decision(broker, result=_result(), decision=decision, risk_eval=_risk_eval())
+    order = await _wire_paper_decision(
+        broker, result=_result(), decision=decision, risk_eval=_risk_eval()
+    )
+    assert order is not None
+    await broker.fill_pending(order, open_price=1.10, ts=_NOW)
     assert await store.get_open_position("EURUSD") is not None
 
     second = await _wire_paper_decision(
         broker,
-        result=_result(direction=Direction.SHORT),
+        result=_result(direction=Direction.LONG),  # same side: keep-policy
         decision=_decision(),
         risk_eval=_risk_eval(),
     )
     assert second is None
     assert len(store.orders) == 1  # the rejection added nothing
+
+
+async def test_opposing_open_position_submits_a_pending_order():
+    """An opposing open position still submits; the lifecycle flips next-bar."""
+    store = InMemoryStore()
+    broker = LedgerBroker(store=store, seed=7)
+    decision = _decision()
+
+    order = await _wire_paper_decision(
+        broker, result=_result(), decision=decision, risk_eval=_risk_eval()
+    )
+    assert order is not None
+    await broker.fill_pending(order, open_price=1.10, ts=_NOW)
+
+    opposing = await _wire_paper_decision(
+        broker,
+        result=_result(direction=Direction.SHORT),
+        decision=_decision(),
+        risk_eval=_risk_eval(),
+    )
+    assert opposing is not None
+    assert opposing.status == PaperOrderStatus.PENDING.value  # flip at next open
+    assert len(store.orders) == 2
 
 
 async def test_missing_sizing_never_opens_a_position():
@@ -393,7 +443,7 @@ async def test_lost_decision_row_or_risk_row_is_a_noop():
 
 def test_wiring_gateway_exposes_no_live_order_methods():
     names = {m for m in dir(PaperBrokerGateway)}
-    assert "open_at_next_open" in names
+    assert "submit_paper_order" in names
     for bad in ("submit_order", "route_order", "place_order", "create_live_order"):
         assert bad not in names
 

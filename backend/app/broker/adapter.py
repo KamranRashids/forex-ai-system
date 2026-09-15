@@ -19,13 +19,22 @@ from typing import Protocol
 
 from app.agents.base import Direction
 from app.broker.paper import Trade
-from app.models.paper_ledger import AccountSnapshotRow, PaperOrderRow
+from app.models.paper_ledger import (
+    AccountSnapshotRow,
+    PaperOrderRow,
+    PaperPositionRow,
+)
 
 
 class BrokerAdapter(Protocol):
-    """Minimal, paper-only contract for opening/closing/valuing positions."""
+    """Minimal, paper-only contract for opening/closing/valuing positions.
 
-    async def open_at_next_open(
+    Entry is deferred: ``submit_paper_order`` persists a PENDING order (Phase
+    13D) and a later lifecycle step calls ``fill_pending`` at the order's
+    deterministic next-bar open, producing the position row.
+    """
+
+    async def submit_paper_order(
         self,
         *,
         symbol: str,
@@ -38,12 +47,24 @@ class BrokerAdapter(Protocol):
         stop_loss: float | None = None,
         take_profit: float | None = None,
     ) -> PaperOrderRow | None:
-        """Request a fill at the next bar's open.
+        """Persist a PENDING paper order linked to a decision.
 
-        Returns the persisted order on success, or None when the order is
-        rejected (e.g. a position is already open for the symbol, or the
-        direction is FLAT / units are non-positive).
+        Returns the pending order on success, or None when the order is
+        rejected (FLAT / non-positive units, or an open position on the same
+        side already exists — mirror of the backtest's keep-policy).
         """
+        ...
+
+    async def fill_pending(
+        self, order: PaperOrderRow, *, open_price: float, ts: datetime
+    ) -> PaperPositionRow | None:
+        """Fill a PENDING order at the next bar's open; persists FILLED + OPEN."""
+        ...
+
+    async def cancel_pending(
+        self, order: PaperOrderRow, *, reason: str
+    ) -> PaperOrderRow | None:
+        """Cancel a PENDING order (superseded / missing fill bar)."""
         ...
 
     async def evaluate_exit(self, *, symbol: str, close: float, ts: datetime) -> Trade | None:

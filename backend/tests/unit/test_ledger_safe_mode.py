@@ -49,7 +49,9 @@ class _NullStore:
 def test_ledger_broker_conforms_to_broker_adapter():
     """LedgerBroker structurally satisfies the BrokerAdapter paper-only contract."""
     required = {
-        "open_at_next_open",
+        "submit_paper_order",
+        "fill_pending",
+        "cancel_pending",
         "evaluate_exit",
         "close_on_signal",
         "mark_position",

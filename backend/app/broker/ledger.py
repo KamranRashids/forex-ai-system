@@ -11,18 +11,27 @@ exactly with a backtest fill for the same inputs. Reusing ``PaperBroker``
 guarantees that parity with zero drift, and the strict unit coverage gate sees
 the same logic it already covers.
 
+Entry policy (Phase 13D): entry is deferred, not immediate.
+
+- ``submit_paper_order`` persists a ``PENDING`` order linked to the decision
+  (requested price = the risk evaluation's reference price; no position, no
+  ``PaperBroker`` mutation). A same-side open position is a deterministic
+  no-op (keep-policy, matching the backtest driver), while an opposing open
+  position still submits — the lifecycle flips at the next-bar open.
+- ``fill_pending`` is the lifecycle's fill seam: it fills the order at the
+  deterministic next-bar open of the order's timeframe (``filled_price`` = the
+  open, ``filled_at`` = the fill-bar bucket) and persists a FILLED order + OPEN
+  position, delegating all math to ``PaperBroker.enter_at_next_open``.
+
 SAFE MODE: persistence only. There is no order routing, no broker connection,
 and no live-execution path. Nothing in this module auto-subscribes PAPER
-decisions; the future paper executor must drive this class explicitly. The
-``PENDING`` order status exists for that future executor; ``LedgerBroker``
-itself fills immediately at the provided next-bar open (decision D-C), exactly
-like the backtest driver.
+decisions; the orchestrator's paper lifecycle drives this class explicitly.
 """
 
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Protocol
 
@@ -51,6 +60,9 @@ class LedgerStore(Protocol):
     """Persistence seam the broker writes through (in-memory in unit tests)."""
 
     async def save_order(self, order: PaperOrderRow) -> None: ...
+    async def update_order(self, order: PaperOrderRow) -> None: ...
+    async def list_pending_orders(self) -> list[PaperOrderRow]: ...
+    async def get_decision_bucket(self, decision_id: uuid.UUID | None) -> datetime | None: ...
     async def save_position(self, position: PaperPositionRow) -> None: ...
     async def get_open_position(self, symbol: str) -> PaperPositionRow | None: ...
     async def list_open_positions(self) -> list[PaperPositionRow]: ...
@@ -75,16 +87,37 @@ class LedgerBroker:
         self._seed = seed
         #: The single source of truth for simulation math (fill/cost/equity).
         self._paper = PaperBroker(start_equity=start_equity, seed=seed, cost_params=cost_params)
+        #: Pending orders restored from the ledger (rebuilds after ``restore_state``).
+        self._pending: list[PaperOrderRow] = []
 
     # --- projection -----------------------------------------------------------
+
+    @property
+    def store(self) -> LedgerStore:
+        """The persistence seam this broker writes through (same-session store)."""
+        return self._store
 
     def state(self, ts: datetime) -> BrokerState:
         """Live projected broker state (not yet persisted)."""
         return self._paper.state(ts)
 
-    # --- fills ----------------------------------------------------------------
+    def open_for(self, symbol: str) -> Position | None:
+        """In-memory open position for ``symbol`` (post-restore view)."""
+        return self._paper.positions.open_for(symbol.upper())
 
-    async def open_at_next_open(
+    @property
+    def open_symbols(self) -> set[str]:
+        """Symbols holding an in-memory open position (post-restore view)."""
+        return {p.symbol for p in self._paper.positions.positions}
+
+    @property
+    def pending(self) -> list[PaperOrderRow]:
+        """Pending orders as restored from the ledger (oldest first)."""
+        return list(self._pending)
+
+    # --- entry (deferred: submit -> lifecycle fill) -----------------------------
+
+    async def submit_paper_order(
         self,
         *,
         symbol: str,
@@ -97,51 +130,92 @@ class LedgerBroker:
         stop_loss: float | None = None,
         take_profit: float | None = None,
     ) -> PaperOrderRow | None:
-        """Fill at the next bar's open and persist the order + position.
+        """Persist a PENDING paper order linked to a decision (no fill yet).
 
-        Delegates the fill (entry price, deterministic costs, cash deduction) to
-        ``PaperBroker``, so results are byte-for-byte identical to a backtest
-        fill for the same inputs. Returns None when the order is rejected.
+        Guards (fail closed):
+        - FLAT / non-positive units -> None;
+        - an open position with the *same side* -> None (keep-policy, mirror of
+          the backtest driver scheduling fills: `driver.py` lines 248-249);
+        - an opposing open position still submits — the lifecycle closes and
+          re-opens at the next-bar open.
+
+        ``ref_price`` is the risk evaluation's reference price (requested, not
+        guaranteed); ``ts`` records the decision-bar context for audit. The row
+        keeps ``seed`` so the lifecycle fills with the same deterministic costs.
         """
         sym = symbol.upper()
         if direction == Direction.FLAT or units <= 0:
             return None
-        if self._paper.positions.open_for(sym) is not None:
+        pos = self._paper.positions.open_for(sym)
+        if pos is not None and pos.side == direction:
             return None
-        self._paper.enter_at_next_open(
+        # One order per decision, even while PENDING (restored + this session):
+        # a redelivered decision must never create a second pending row. The
+        # DB's uq_orders_paper_decision_id is the backstop.
+        if decision_id is not None and any(
+            o.decision_id == decision_id for o in self._pending
+        ):
+            return None
+        order = PaperOrderRow(
+            id=uuid.uuid4(),
+            decision_id=decision_id,
             symbol=sym,
             timeframe=timeframe,
-            direction=direction,
-            ref_price=float(ref_price),
+            side=direction.value,
+            order_type=PaperOrderType.NEXT_OPEN.value,
+            status=PaperOrderStatus.PENDING.value,
+            units=_d(units),
+            requested_price=_d(ref_price),
+            filled_price=None,
+            costs=Decimal("0"),
+            stop_loss=None if stop_loss is None else _d(stop_loss),
+            take_profit=None if take_profit is None else _d(take_profit),
+            seed=self._seed,
+            filled_at=None,
+        )
+        self._pending.append(order)
+        await self._store.save_order(order)
+        return order
+
+    async def fill_pending(
+        self, order: PaperOrderRow, *, open_price: float, ts: datetime
+    ) -> PaperPositionRow | None:
+        """Fill a PENDING order at the next bar's open; persist FILLED + OPEN.
+
+        Delegates the fill (entry price, deterministic entry costs, cash
+        deduction) to ``PaperBroker.enter_at_next_open`` so results are
+        byte-for-byte identical to a backtest fill for the same inputs.
+        ``filled_price`` = the open, ``filled_at`` = ``ts`` (the fill-bar
+        bucket). Returns None when the order is not PENDING or the symbol
+        already has an open position.
+        """
+        sym = order.symbol.upper()
+        if order.status != PaperOrderStatus.PENDING.value:
+            return None
+        if self._paper.positions.open_for(sym) is not None:
+            return None
+        # Fill with the deterministic seed recorded at submit time.
+        self._paper.seed = order.seed
+        self._paper.enter_at_next_open(
+            symbol=sym,
+            timeframe=order.timeframe,
+            direction=Direction(order.side),
+            ref_price=float(open_price),
             ts=ts,
-            stop_loss=stop_loss,
-            take_profit=take_profit,
-            units=float(units),
+            stop_loss=None if order.stop_loss is None else float(order.stop_loss),
+            take_profit=None if order.take_profit is None else float(order.take_profit),
+            units=float(order.units),
         )
         pos = self._paper.positions.open_for(sym)
         if pos is None:
             return None
-        order_id = uuid.uuid4()
-        order = PaperOrderRow(
-            id=order_id,
-            decision_id=decision_id,
-            symbol=pos.symbol,
-            timeframe=pos.timeframe,
-            side=pos.side.value,
-            order_type=PaperOrderType.NEXT_OPEN.value,
-            status=PaperOrderStatus.FILLED.value,
-            units=_d(units),
-            requested_price=_d(ref_price),
-            filled_price=_d(pos.entry_price),
-            costs=_d(pos.costs),
-            stop_loss=None if pos.stop_loss is None else _d(pos.stop_loss),
-            take_profit=None if pos.take_profit is None else _d(pos.take_profit),
-            seed=self._seed,
-            filled_at=ts,
-        )
+        order.status = PaperOrderStatus.FILLED.value
+        order.filled_price = _d(pos.entry_price)
+        order.costs = _d(pos.costs)
+        order.filled_at = ts
         position = PaperPositionRow(
             id=uuid.uuid4(),
-            order_id=order_id,
+            order_id=order.id,
             symbol=pos.symbol,
             timeframe=pos.timeframe,
             side=pos.side.value,
@@ -153,8 +227,20 @@ class LedgerBroker:
             costs=_d(pos.costs),
             status=PaperPositionStatus.OPEN.value,
         )
-        await self._store.save_order(order)
+        self._pending = [o for o in self._pending if o.id != order.id]
+        await self._store.update_order(order)
         await self._store.save_position(position)
+        return position
+
+    async def cancel_pending(
+        self, order: PaperOrderRow, *, reason: str
+    ) -> PaperOrderRow | None:
+        """Cancel a PENDING order (superseded / missing fill bar)."""
+        if order.status != PaperOrderStatus.PENDING.value:
+            return None
+        order.status = PaperOrderStatus.CANCELLED.value
+        self._pending = [o for o in self._pending if o.id != order.id]
+        await self._store.update_order(order)
         return order
 
     async def evaluate_exit(self, *, symbol: str, close: float, ts: datetime) -> Trade | None:
@@ -250,6 +336,13 @@ class LedgerBroker:
             )
             for row in closed_rows
         ]
+
+        #: Rebuild the pending queue so delayed fills resume after a restart.
+        pending = await self._store.list_pending_orders()
+        self._pending = sorted(
+            pending,
+            key=lambda o: (o.created_at or datetime.min.replace(tzinfo=UTC), o.id),
+        )
 
     # --- internals ------------------------------------------------------------
 
