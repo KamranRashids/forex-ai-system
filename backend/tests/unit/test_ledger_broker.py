@@ -55,15 +55,9 @@ class InMemoryStore:
                 return
 
     async def list_pending_orders(self) -> list[PaperOrderRow]:
-        return [
-            order
-            for order in self.orders
-            if order.status == PaperOrderStatus.PENDING.value
-        ]
+        return [order for order in self.orders if order.status == PaperOrderStatus.PENDING.value]
 
-    async def get_decision_bucket(
-        self, decision_id: uuid.UUID | None
-    ) -> datetime | None:
+    async def get_decision_bucket(self, decision_id: uuid.UUID | None) -> datetime | None:
         return _T0 if decision_id is not None else None
 
     async def save_position(self, position: PaperPositionRow) -> None:

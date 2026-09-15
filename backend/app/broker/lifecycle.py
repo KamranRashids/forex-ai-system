@@ -184,9 +184,7 @@ def arbitrate_fills(
     return decisions
 
 
-def catchup_window(
-    stamps: Sequence[datetime], max_bars: int
-) -> tuple[list[datetime], int]:
+def catchup_window(stamps: Sequence[datetime], max_bars: int) -> tuple[list[datetime], int]:
     """Throttle window: ascending stamps, at most ``max_bars``; never a skip.
 
     Returns ``(to_process, depth_remaining)``. Anything beyond the throttle is
@@ -210,11 +208,7 @@ def missing_bar_candidates(
     """
     present = set(candle_buckets)
     return sorted(
-        (
-            c
-            for c in candidates
-            if c.fill_stamp <= latest_closed and c.fill_stamp not in present
-        ),
+        (c for c in candidates if c.fill_stamp <= latest_closed and c.fill_stamp not in present),
         key=_key,
     )
 
@@ -232,15 +226,14 @@ class PaperLifecycle:
         *,
         store: LedgerStore,
         broker: LedgerBroker,
-        decision_bucket: Callable[[uuid.UUID | None], Awaitable[datetime | None]]
-        | None = None,
+        decision_bucket: Callable[[uuid.UUID | None], Awaitable[datetime | None]] | None = None,
         snapshot_interval_seconds: int | None = None,
     ) -> None:
         self._store = store
         self._broker = broker
-        self._decision_bucket: Callable[
-            [uuid.UUID | None], Awaitable[datetime | None]
-        ] = decision_bucket or store.get_decision_bucket
+        self._decision_bucket: Callable[[uuid.UUID | None], Awaitable[datetime | None]] = (
+            decision_bucket or store.get_decision_bucket
+        )
         self._snapshot_interval = snapshot_interval_seconds
 
     async def pending_candidates(self) -> list[PendingCandidate]:
@@ -273,11 +266,7 @@ class PaperLifecycle:
         open_p: PaperPositionRow | None = None
         if open_positions is not None:
             open_p = next(
-                (
-                    p
-                    for p in open_positions
-                    if p.symbol == sym and p.timeframe == timeframe
-                ),
+                (p for p in open_positions if p.symbol == sym and p.timeframe == timeframe),
                 None,
             )
         return UnitFrontier(
@@ -319,9 +308,7 @@ class PaperLifecycle:
 
         open_pos = self._broker.open_for(sym)
         open_side = None if open_pos is None else open_pos.side
-        for cand, action in arbitrate_fills(
-            open_side, candidates_for_bar(candidates, bar.ts)
-        ):
+        for cand, action in arbitrate_fills(open_side, candidates_for_bar(candidates, bar.ts)):
             if action == "superseded":
                 if (
                     await self._broker.cancel_pending(cand.order, reason=CANCEL_SUPERSEDED)
@@ -401,8 +388,7 @@ class PaperLifecycle:
         latest = await self._store.latest_snapshot()
         if latest is None:
             return True
-        within_interval = (
-            self._snapshot_interval is not None
-            and bar.ts < latest.ts + timedelta(seconds=self._snapshot_interval)
+        within_interval = self._snapshot_interval is not None and bar.ts < latest.ts + timedelta(
+            seconds=self._snapshot_interval
         )
         return not (latest.ts >= bar.ts or within_interval)

@@ -61,9 +61,7 @@ class BrokerAdapter(Protocol):
         """Fill a PENDING order at the next bar's open; persists FILLED + OPEN."""
         ...
 
-    async def cancel_pending(
-        self, order: PaperOrderRow, *, reason: str
-    ) -> PaperOrderRow | None:
+    async def cancel_pending(self, order: PaperOrderRow, *, reason: str) -> PaperOrderRow | None:
         """Cancel a PENDING order (superseded / missing fill bar)."""
         ...
 

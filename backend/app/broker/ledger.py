@@ -152,9 +152,7 @@ class LedgerBroker:
         # One order per decision, even while PENDING (restored + this session):
         # a redelivered decision must never create a second pending row. The
         # DB's uq_orders_paper_decision_id is the backstop.
-        if decision_id is not None and any(
-            o.decision_id == decision_id for o in self._pending
-        ):
+        if decision_id is not None and any(o.decision_id == decision_id for o in self._pending):
             return None
         order = PaperOrderRow(
             id=uuid.uuid4(),
@@ -232,9 +230,7 @@ class LedgerBroker:
         await self._store.save_position(position)
         return position
 
-    async def cancel_pending(
-        self, order: PaperOrderRow, *, reason: str
-    ) -> PaperOrderRow | None:
+    async def cancel_pending(self, order: PaperOrderRow, *, reason: str) -> PaperOrderRow | None:
         """Cancel a PENDING order (superseded / missing fill bar)."""
         if order.status != PaperOrderStatus.PENDING.value:
             return None

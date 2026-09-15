@@ -190,24 +190,18 @@ def test_candidates_for_bar_filters_and_sorts():
         PendingCandidate(order=o3, fill_stamp=_B1),
     ]
     at_b1 = candidates_for_bar(cands, _B1)
-    assert [c.order.id for c in at_b1] == sorted(
-        [c.order.id for c in (cands[0], cands[2])]
-    )
+    assert [c.order.id for c in at_b1] == sorted([c.order.id for c in (cands[0], cands[2])])
     assert candidates_for_bar(cands, _B3) == []
 
 
 def test_arbitrate_fills_no_open_first_candidate_acts():
     cands = [
         PendingCandidate(
-            order=PaperOrderRow(
-                id=uuid.uuid4(), symbol="EURUSD", timeframe="H1", side="LONG"
-            ),
+            order=PaperOrderRow(id=uuid.uuid4(), symbol="EURUSD", timeframe="H1", side="LONG"),
             fill_stamp=_B1,
         ),
         PendingCandidate(
-            order=PaperOrderRow(
-                id=uuid.uuid4(), symbol="EURUSD", timeframe="H1", side="LONG"
-            ),
+            order=PaperOrderRow(id=uuid.uuid4(), symbol="EURUSD", timeframe="H1", side="LONG"),
             fill_stamp=_B1,
         ),
     ]
@@ -218,15 +212,11 @@ def test_arbitrate_fills_no_open_first_candidate_acts():
 def test_arbitrate_fills_same_side_supersedes_then_opposing_flips():
     cands = [
         PendingCandidate(
-            order=PaperOrderRow(
-                id=uuid.uuid4(), symbol="EURUSD", timeframe="H1", side="LONG"
-            ),
+            order=PaperOrderRow(id=uuid.uuid4(), symbol="EURUSD", timeframe="H1", side="LONG"),
             fill_stamp=_B1,
         ),
         PendingCandidate(
-            order=PaperOrderRow(
-                id=uuid.uuid4(), symbol="EURUSD", timeframe="H1", side="SHORT"
-            ),
+            order=PaperOrderRow(id=uuid.uuid4(), symbol="EURUSD", timeframe="H1", side="SHORT"),
             fill_stamp=_B1,
         ),
     ]
@@ -268,9 +258,7 @@ def test_missing_bar_candidates_never_fabricate_price():
         order=PaperOrderRow(id=uuid.uuid4(), symbol="EURUSD", timeframe="H1", side="LONG"),
         fill_stamp=_B2,
     )
-    built = missing_bar_candidates(
-        [late, missing, present], [_B2], latest_closed=_B2
-    )
+    built = missing_bar_candidates([late, missing, present], [_B2], latest_closed=_B2)
     # Only ``missing``: ``late`` is not due yet, ``present`` has a closed candle.
     assert [c.order.id for c in built] == [missing.order.id]
 
@@ -490,9 +478,7 @@ async def test_missing_bar_marked_for_cancellation():
     assert [c.order.id for c in doomed] == [order.id]
 
     for cand in doomed:
-        assert (
-            await broker.cancel_pending(cand.order, reason=CANCEL_MISSING_BAR) is not None
-        )
+        assert await broker.cancel_pending(cand.order, reason=CANCEL_MISSING_BAR) is not None
     assert order.status == PaperOrderStatus.CANCELLED.value
     assert broker.pending == []
     assert await lifecycle.pending_candidates() == []
@@ -516,7 +502,9 @@ async def test_frontier_captures_fill_bars_and_resume_after():
     assert frontier.fill_bars == frozenset({_B1})
 
     await lifecycle.process_unit_bar(
-        symbol="EURUSD", timeframe="H1", bar=Bar(ts=_B1, open=1.10, close=1.11),
+        symbol="EURUSD",
+        timeframe="H1",
+        bar=Bar(ts=_B1, open=1.10, close=1.11),
         candidates=await lifecycle.pending_candidates(),
     )
     frontier = await lifecycle.frontier(
@@ -545,7 +533,9 @@ async def test_restore_rebuilds_pending_queue_and_fills_later():
     assert [c.order.id for c in (await lifecycle.pending_candidates())] == [order.id]
 
     result = await lifecycle.process_unit_bar(
-        symbol="EURUSD", timeframe="H1", bar=Bar(ts=_B1, open=1.10, close=1.11),
+        symbol="EURUSD",
+        timeframe="H1",
+        bar=Bar(ts=_B1, open=1.10, close=1.11),
         candidates=await lifecycle.pending_candidates(),
     )
     assert result.filled == 1
@@ -566,7 +556,9 @@ async def test_reconcile_passes_when_in_sync():
     assert await lifecycle.reconcile() is True
 
     await lifecycle.process_unit_bar(
-        symbol="EURUSD", timeframe="H1", bar=Bar(ts=_B1, open=1.10, close=1.11),
+        symbol="EURUSD",
+        timeframe="H1",
+        bar=Bar(ts=_B1, open=1.10, close=1.11),
         candidates=await lifecycle.pending_candidates(),
     )
     assert await lifecycle.reconcile() is True
@@ -638,13 +630,13 @@ async def test_snapshot_interval_throttles_writes():
     store = InMemoryStore()
     broker = LedgerBroker(store=store, seed=7)
     await _submit(broker, store, bucket=_B0)  # fill stamp _B1
-    lifecycle = PaperLifecycle(
-        store=store, broker=broker, snapshot_interval_seconds=7200
-    )
+    lifecycle = PaperLifecycle(store=store, broker=broker, snapshot_interval_seconds=7200)
     candidates = await lifecycle.pending_candidates()
     for ts, close in [(_B1, 1.11), (_B2, 1.12), (_B3, 1.13)]:
         await lifecycle.process_unit_bar(
-            symbol="EURUSD", timeframe="H1", bar=Bar(ts=ts, open=1.10, close=close),
+            symbol="EURUSD",
+            timeframe="H1",
+            bar=Bar(ts=ts, open=1.10, close=close),
             candidates=candidates,
         )
     # Written at _B1 (first) and _B3 (>= _B1 + 2h); _B2 falls inside the interval.
@@ -663,9 +655,7 @@ async def test_process_unit_catch_up_throttled_ascending():
     lifecycle = PaperLifecycle(store=store, broker=broker)
     bars = [Bar(ts=_B0 + timedelta(hours=i), open=1.10, close=1.11) for i in range(1, 26)]
 
-    summary = await lifecycle.process_unit(
-        symbol="EURUSD", timeframe="H1", bars=bars, max_bars=24
-    )
+    summary = await lifecycle.process_unit(symbol="EURUSD", timeframe="H1", bars=bars, max_bars=24)
 
     assert summary.bars_processed == 24
     assert summary.depth_remaining == 1

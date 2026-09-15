@@ -158,10 +158,14 @@ async def _position_counts(db_sessionmaker: Any) -> dict[str, int]:
 
     async with db_sessionmaker() as session:
         statuses = (
-            await session.execute(
-                select(PaperPositionRow.status).where(PaperPositionRow.symbol == SYMBOL)
+            (
+                await session.execute(
+                    select(PaperPositionRow.status).where(PaperPositionRow.symbol == SYMBOL)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
     counts = {PaperPositionStatus.OPEN.value: 0, PaperPositionStatus.CLOSED.value: 0}
     for status in statuses:
         counts[status] = counts.get(status, 0) + 1
@@ -179,9 +183,7 @@ async def test_lifecycle_fills_exits_and_snapshots(db_sessionmaker: Any, fake_re
     await _seed_candles(db_sessionmaker, {0: 1.10, 15: 1.10, 30: 1.07})
     worker = _orch_worker(db_sessionmaker, fake_redis)
 
-    await _sponsor_pending(
-        db_sessionmaker, stop_loss=1.075, take_profit=1.12
-    )
+    await _sponsor_pending(db_sessionmaker, stop_loss=1.075, take_profit=1.12)
     result = await worker.process_lifecycle()
 
     assert result is not None
@@ -221,9 +223,7 @@ async def test_lifecycle_fills_exits_and_snapshots(db_sessionmaker: Any, fake_re
     from app.models.paper_ledger import AccountSnapshotRow
 
     async with db_sessionmaker() as session:
-        snapshot_count = await session.scalar(
-            select(func.count()).select_from(AccountSnapshotRow)
-        )
+        snapshot_count = await session.scalar(select(func.count()).select_from(AccountSnapshotRow))
     # The lifecycle persisted observability snapshots (fill + exit bars).
     assert snapshot_count is not None and snapshot_count >= 1
 
