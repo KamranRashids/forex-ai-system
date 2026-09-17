@@ -68,6 +68,40 @@ def test_expired_token_rejected(test_settings) -> None:  # noqa: ANN001 - fixtur
 
 
 @pytest.mark.unit
+def test_small_backward_clock_step_accepted(test_settings) -> None:  # noqa: ANN001
+    """Fresh tokens survive a small backward wall-clock step (JWT leeway).
+
+    ``iat`` is floored to the second at issuance; a host clock step of a couple
+    of seconds (NTP discipline under load) would otherwise intermittently reject
+    tokens seconds after they were issued. 2s of leeway covers that without
+    ever reaching the 30-minute ``exp`` horizon.
+    """
+    user_id = uuid.uuid4()
+    with freezegun.freeze_time("2026-01-01T00:00:00Z"):
+        token, _exp = create_access_token(user_id=user_id, role="viewer", settings=test_settings)
+
+    # Verification clock sits ~2s BEFORE the floored iat -> within JWT leeway.
+    with freezegun.freeze_time("2025-12-31T23:59:58Z"):
+        payload = decode_token(token, expected_type=TOKEN_TYPE_ACCESS, settings=test_settings)
+    assert payload["sub"] == str(user_id)
+
+
+@pytest.mark.unit
+def test_large_future_iat_still_rejected(test_settings) -> None:  # noqa: ANN001
+    """Leeway is bounded: an iat far ahead of the verifier's clock is refused."""
+    user_id = uuid.uuid4()
+    with freezegun.freeze_time("2026-01-01T00:00:00Z"):
+        token, _exp = create_access_token(user_id=user_id, role="viewer", settings=test_settings)
+
+    # Verification clock sits 2 minutes before the floored iat -> far beyond leeway.
+    with (
+        freezegun.freeze_time("2025-12-31T23:58:00Z"),
+        pytest.raises(AuthenticationError, match="Invalid token"),
+    ):
+        decode_token(token, expected_type=TOKEN_TYPE_ACCESS, settings=test_settings)
+
+
+@pytest.mark.unit
 def test_tampered_signature_rejected(test_settings) -> None:  # noqa: ANN001
     token, _ = create_access_token(user_id=uuid.uuid4(), role="viewer", settings=test_settings)
     tampered = token[:-6] + ("aaaaaa" if not token.endswith("aaaaaa") else "bbbbbb")

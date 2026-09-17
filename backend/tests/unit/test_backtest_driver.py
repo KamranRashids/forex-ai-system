@@ -164,3 +164,191 @@ def test_daily_loss_keyed_on_utc_date_is_hosttimezone_independent():
     # would differ. Asserting determinism here guards the non-determinism bug.
     broker2, result2 = _run(cfg, StubRunner(Direction.LONG))
     assert result2.metrics.to_dict() == result.metrics.to_dict()
+
+
+# ---------------------------------------------------------------------------
+# Phase 14A: joint gate parity — build_ledger_gate mirrors driver._gate
+# ---------------------------------------------------------------------------
+
+_VERSION_TS = datetime(2024, 3, 2, 12, 0, tzinfo=UTC)
+
+
+class _MirrorStore:
+    """Minimal ledger store the parity scenarios rehydrate from."""
+
+    def __init__(self) -> None:
+        from app.models.paper_ledger import (
+            AccountSnapshotRow,
+            PaperOrderRow,
+            PaperPositionRow,
+        )
+
+        self.snapshots: list[AccountSnapshotRow] = []
+        self.open_rows: list[PaperPositionRow] = []
+        self.closed_rows: list[PaperPositionRow] = []
+        self.orders: list[PaperOrderRow] = []
+
+    async def latest_snapshot(self):
+        return self.snapshots[-1] if self.snapshots else None
+
+    async def list_open_positions(self):
+        return self.open_rows
+
+    async def list_closed_positions(self):
+        return self.closed_rows
+
+    async def list_pending_orders(self):
+        return self.orders
+
+    async def load_open_position_rows(self):
+        return self.open_rows
+
+    async def load_realized_pnl_since(self, start_ts, end_ts):
+        from decimal import Decimal
+
+        return sum(
+            (p.net_pnl or Decimal("0"))
+            for p in self.closed_rows
+            if p.exit_ts is not None and start_ts <= p.exit_ts < end_ts
+        )
+
+    async def list_pending_expired(self, now):
+        return []
+
+
+def _ledger_store_for(
+    broker: PaperBroker, ts: datetime, *, with_snapshot: bool = True
+) -> _MirrorStore:
+    """Mirror a driven PaperBroker's positions/trades into a ledger store."""
+    import uuid as _uuid
+    from decimal import Decimal
+
+    from app.models.paper_ledger import AccountSnapshotRow, PaperPositionRow
+
+    store = _MirrorStore()
+    for pos in broker.positions.positions:
+        store.open_rows.append(
+            PaperPositionRow(
+                id=_uuid.uuid4(),
+                order_id=_uuid.uuid4(),
+                symbol=pos.symbol,
+                timeframe=pos.timeframe,
+                side=pos.side.value,
+                units=Decimal(str(pos.units)),
+                entry_price=Decimal(str(pos.entry_price)),
+                entry_ts=pos.entry_ts,
+                stop_loss=None if pos.stop_loss is None else Decimal(str(pos.stop_loss)),
+                take_profit=None if pos.take_profit is None else Decimal(str(pos.take_profit)),
+                costs=Decimal(str(pos.costs)),
+                status="OPEN",
+            )
+        )
+    for trade in broker.trades:
+        store.closed_rows.append(
+            PaperPositionRow(
+                id=_uuid.uuid4(),
+                order_id=_uuid.uuid4(),
+                symbol=trade.symbol,
+                timeframe=trade.timeframe,
+                side=trade.side.value,
+                units=Decimal(str(trade.units)),
+                entry_price=Decimal(str(trade.entry_price)),
+                entry_ts=trade.entry_ts,
+                exit_price=Decimal(str(trade.exit_price)),
+                exit_ts=trade.exit_ts,
+                costs=Decimal(str(trade.costs)),
+                net_pnl=Decimal(str(trade.net_pnl)),
+                status="CLOSED",
+            )
+        )
+    # Rehydrate the live-equity view from a snapshot exactly like production
+    # (restore_state rebuilds equity/drawdown from the latest snapshot). A
+    # fresh account (with_snapshot=False) leaves equity at start_equity, the
+    # same denominator the driver's daily-loss gate uses for a new wallet.
+    if with_snapshot:
+        store.snapshots.append(
+            AccountSnapshotRow(
+                id=_uuid.uuid4(),
+                ts=ts,
+                cash=Decimal(str(broker.cash)),
+                equity=Decimal(str(broker.total_equity())),
+                open_pnl=Decimal(str(broker.total_equity() - broker.cash)),
+                realized_pnl=Decimal(str(sum((t.net_pnl for t in broker.trades), 0.0))),
+                peak_equity=Decimal(str(broker.peak_equity)),
+                drawdown_pct=Decimal(str(broker.max_drawdown_pct)),
+                margin_used=Decimal("0"),
+                extra={},
+            )
+        )
+    return store
+
+
+async def test_ledger_gate_equals_driver_gate_open_position():
+    """One OPEN LONG: builder GateState is identical to ``driver._gate``."""
+    from app.broker.ledger import LedgerBroker
+    from app.decisions.ledger_gate import build_ledger_gate
+
+    broker = PaperBroker(start_equity=100_000.0, seed=0, cost_params=CostParams())
+    cfg = _cfg()
+    driver = BacktestDriver(
+        cfg=cfg,
+        risk=_risk(),
+        broker=broker,
+        candle_provider=synthetic_candle_provider,
+        runner=BacktestAgentRunner(),
+    )
+    broker.enter_at_next_open(
+        symbol="EURUSD",
+        timeframe="H1",
+        direction=Direction.LONG,
+        ref_price=1.09,
+        ts=_VERSION_TS,
+        units=5_000.0,
+    )
+    driver_gate = driver._gate("EURUSD", _VERSION_TS)
+    assert driver_gate.exposure_used_pct > 0.0
+
+    store = _ledger_store_for(broker, _VERSION_TS)
+    ledger = LedgerBroker(store=store, start_equity=100_000.0, seed=0)
+    await ledger.restore_state()
+    view = await build_ledger_gate(broker=ledger, symbol="EURUSD", now=_VERSION_TS)
+
+    assert view.gate == driver_gate
+
+
+async def test_ledger_gate_equals_driver_gate_after_closed_loss():
+    """After a closed loss (no snapshot drift): daily-loss gate is identical."""
+    from app.broker.ledger import LedgerBroker
+    from app.decisions.ledger_gate import build_ledger_gate
+
+    broker = PaperBroker(start_equity=100_000.0, seed=0, cost_params=CostParams())
+    cfg = _cfg()
+    driver = BacktestDriver(
+        cfg=cfg,
+        risk=_risk(),
+        broker=broker,
+        candle_provider=synthetic_candle_provider,
+        runner=BacktestAgentRunner(),
+    )
+    broker.enter_at_next_open(
+        symbol="EURUSD",
+        timeframe="H1",
+        direction=Direction.LONG,
+        ref_price=1.0850,
+        ts=_VERSION_TS,
+        stop_loss=1.0805,
+        units=10_000.0,
+    )
+    trade = broker.evaluate_exit(symbol="EURUSD", close=1.0800, ts=_VERSION_TS + timedelta(hours=1))
+    assert trade is not None and trade.net_pnl < 0
+
+    driver_gate = driver._gate("EURUSD", _VERSION_TS)
+    assert driver_gate.daily_loss_used_pct > 0.0
+    assert driver_gate.exposure_used_pct == 0.0
+
+    store = _ledger_store_for(broker, _VERSION_TS, with_snapshot=False)
+    ledger = LedgerBroker(store=store, start_equity=100_000.0, seed=0)
+    await ledger.restore_state()
+    view = await build_ledger_gate(broker=ledger, symbol="EURUSD", now=_VERSION_TS)
+
+    assert view.gate == driver_gate

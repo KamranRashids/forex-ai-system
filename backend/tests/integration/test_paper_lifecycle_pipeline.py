@@ -173,6 +173,107 @@ async def _position_counts(db_sessionmaker: Any) -> dict[str, int]:
 
 
 # ---------------------------------------------------------------------------
+# Phase 14A: PENDING-expiry sweep (cancel + release + restart-safe)
+# ---------------------------------------------------------------------------
+
+
+async def _metric_value(name: str) -> int:
+    from prometheus_client import generate_latest
+
+    value = 0
+    for line in generate_latest().decode().splitlines():
+        if line.startswith(name + " "):
+            value = int(float(line.split()[-1]))
+    return value
+
+
+async def _sponsor_expired_pending(db_sessionmaker: Any) -> uuid.UUID:
+    """Persist a PAPER decision whose ``valid_until`` already passed + PENDING order."""
+    from app.agents.base import Direction
+    from app.broker.ledger import LedgerBroker
+    from app.broker.store import PostgresLedgerStore
+    from app.models.decision import DecisionRow, DecisionStatus
+
+    decision_id = uuid.uuid4()
+    async with db_sessionmaker() as session:
+        session.add(
+            DecisionRow(
+                id=decision_id,
+                run_id="",
+                symbol=SYMBOL,
+                timeframe=TF,
+                bucket_ts=_at(-60),
+                fused_direction="LONG",
+                confidence=Decimal("0.7000"),
+                agreement=Decimal("0.7000"),
+                status=DecisionStatus.PAPER.value,
+                veto_code=None,
+                veto_reason=None,
+                inputs_hash="0" * 64,
+                weights={},
+                code_versions={},
+                rationale=None,
+                decision_at=_at(-60),
+                valid_until=_at(-1),  # already passed by the time the sweep runs
+            )
+        )
+        await session.commit()
+
+    async with db_sessionmaker() as session:
+        broker = LedgerBroker(store=PostgresLedgerStore(session=session), seed=_SEED)
+        order = await broker.submit_paper_order(
+            symbol=SYMBOL,
+            timeframe=TF,
+            direction=Direction.LONG,
+            ref_price=1.10,
+            ts=_at(-60),
+            units=5_000.0,
+            decision_id=decision_id,
+        )
+        await session.commit()
+        assert order is not None
+        assert order.status == "PENDING"
+        return order.id
+
+
+@pytest.mark.asyncio
+async def test_lifecycle_expires_pending_past_valid_until(
+    db_sessionmaker: Any, fake_redis: Any
+) -> None:
+    """A PENDING order past its decision's ``valid_until`` auto-cancels (14A).
+
+    Cancel happens before the unit loop, releases the slot, never fills, and is
+    restart-safe: a second pass cancels nothing and the counter does not move.
+    """
+    from app.models.paper_ledger import PaperOrderRow
+
+    order_id = await _sponsor_expired_pending(db_sessionmaker)
+    worker = _orch_worker(db_sessionmaker, fake_redis)
+    before = await _metric_value("paper_pending_expired_total")
+
+    result = await worker.process_lifecycle()
+
+    assert result.errors == 0
+    assert result.expired == 1
+    assert result.fills == 0
+    assert result.bars == 0
+    assert result.units == 1  # the expired pending order still marks its unit slot
+    assert await _metric_value("paper_pending_expired_total") == before + 1
+
+    async with db_sessionmaker() as session:
+        row = await session.get(PaperOrderRow, order_id)
+        assert row is not None
+        assert row.status == "CANCELLED"
+
+    replay = await worker.process_lifecycle()
+    assert replay.errors == 0
+    assert replay.expired == 0
+    assert replay.fills == 0
+    assert replay.units == 0  # cancelled order released the slot; nothing re-discovered
+    assert await _metric_value("paper_pending_expired_total") == before + 1
+
+
+# ---------------------------------------------------------------------------
 # Fill -> SL exit -> snapshot -> restart no-op
 # ---------------------------------------------------------------------------
 

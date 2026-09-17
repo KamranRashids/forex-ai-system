@@ -73,12 +73,14 @@ from app.core.metrics import (
     PAPER_LIFECYCLE_ERRORS_TOTAL,
     PAPER_OPEN_POSITIONS,
     PAPER_ORDERS_CANCELLED_TOTAL,
+    PAPER_PENDING_EXPIRED_TOTAL,
     PAPER_RECONCILE_FAILS_TOTAL,
 )
 from app.data.market_config import get_market_config
 from app.data.repository import get_or_create_instrument, last_closed_ts, load_candles
 from app.data.risk_config import load_risk_params
-from app.decisions.engine import DecideResult, DecisionAction, DecisionEngine, OrchParams
+from app.decisions.engine import DecideResult, DecisionAction, DecisionEngine, OrchParams, RiskLive
+from app.decisions.ledger_gate import CANCEL_EXPIRED_PENDING, build_ledger_gate
 from app.models.decision import DecisionStatus
 
 if TYPE_CHECKING:
@@ -115,6 +117,7 @@ class PaperLifecycleResult:
     exits: int = 0
     superseded: int = 0
     cancelled_missing: int = 0
+    expired: int = 0
     snapshots: int = 0
     depth_remaining: int = 0
     errors: int = 0
@@ -324,15 +327,36 @@ class OrchestratorWorker:
                 or timeframe.upper() not in configured_timeframes
             ):
                 return None
+            # (14A) When a paper broker is wired, build it ONCE, restore the
+            # ledger into it, derive the risk gate from the actual positions/
+            # closed-trades, and reuse the same broker for the order sponsor —
+            # the gate therefore reflects the ledger as of cycle start, before
+            # this cycle's PENDING write (fill is next-bar, matching the driver).
+            broker = None
+            gate_view = None
+            if self._broker_factory is not None:
+                broker = self._broker_factory(session)
+                await broker.restore_state()
+                gate_view = await build_ledger_gate(
+                    broker=broker, symbol=symbol.upper(), now=datetime.now(UTC)
+                )
             result = await engine.decide(
                 symbol=symbol.upper(),
                 timeframe=timeframe.upper(),
                 configured=configured_timeframes,
                 crafts=_orch_params(self._settings),
                 risk=risk,
+                gate=gate_view.gate if gate_view is not None else None,
+                live=RiskLive(
+                    equity=gate_view.equity,
+                    peak_equity=gate_view.peak_equity,
+                    cumulative_realized=gate_view.cumulative_realized,
+                )
+                if gate_view is not None
+                else None,
             )
             if result.action == DecisionAction.PERSIST:
-                await self._sponsor_paper_order(session, result=result)
+                await self._sponsor_paper_order(session, result=result, broker=broker)
             await session.commit()
 
         ORCH_DECISION_LATENCY.observe(time.perf_counter() - started)
@@ -342,7 +366,13 @@ class OrchestratorWorker:
                 await self._emit_risk_brake_alert(result)
         return result
 
-    async def _sponsor_paper_order(self, session: AsyncSession, *, result: DecideResult) -> None:
+    async def _sponsor_paper_order(
+        self,
+        session: AsyncSession,
+        *,
+        result: DecideResult,
+        broker: LedgerBroker | None = None,
+    ) -> None:
         """Persist the paper order for a PAPER decision (13C / 13D).
 
         Runs inside the same transaction as the decision itself: the decision
@@ -351,18 +381,23 @@ class OrchestratorWorker:
         transaction. On any broker/database failure the exception propagates so
         the surrounding transaction is discarded — an order is never committed
         while the decision that sponsors it is rolled back.
+
+        (14A) ``process_pair`` passes the broker it already restored for the
+        risk gate, so the ledger is rehydrated exactly once per cycle; a fresh
+        broker + ``restore_state()`` is only built when omitted (legacy callers).
         """
         if self._broker_factory is None:
             return
         if result.status != DecisionStatus.PAPER or not result.created:
             return
         decision, risk_eval = await self._load_decision_payload(session, result=result)
-        broker = self._broker_factory(session)
-        # Rehydrate the in-memory paper state from the persisted ledger before
-        # checking the submission guard so any existing same-side position is
-        # seen and the order is cleanly skipped instead of violating the keep
-        # policy (mirror of the backtest driver's fill scheduling).
-        await broker.restore_state()
+        if broker is None:
+            broker = self._broker_factory(session)
+            # Rehydrate the in-memory paper state from the persisted ledger before
+            # checking the submission guard so any existing same-side position is
+            # seen and the order is cleanly skipped instead of violating the keep
+            # policy (mirror of the backtest driver's fill scheduling).
+            await broker.restore_state()
         order = await _wire_paper_decision(
             broker, result=result, decision=decision, risk_eval=risk_eval
         )
@@ -499,6 +534,18 @@ class OrchestratorWorker:
                 )
 
         try:
+            result.expired = await self._cancel_expired_pending()
+        except Exception as exc:  # noqa: BLE001 - rollback the batch, count, continue
+            result.errors += 1
+            PAPER_LIFECYCLE_ERRORS_TOTAL.inc()
+            logger.exception("paper_lifecycle_expiry_sweep_failed", error=str(exc))
+            await self._emit_paper_alert(
+                "alert.paper_lifecycle_degraded",
+                "paper lifecycle expiry sweep failed",
+                str(exc),
+            )
+
+        try:
             async with self._sessions() as session:
                 broker = self._broker_factory(session)
                 PAPER_OPEN_POSITIONS.set(len(await broker.store.list_open_positions()))
@@ -516,6 +563,7 @@ class OrchestratorWorker:
             exits=result.exits,
             superseded=result.superseded,
             cancelled_missing=result.cancelled_missing,
+            expired=result.expired,
             snapshots=result.snapshots,
             depth_remaining=result.depth_remaining,
             errors=result.errors,
@@ -612,6 +660,50 @@ class OrchestratorWorker:
                 snapshots += 1 if unit_result.snapshot_written else 0
 
             return processed, depth, fills, exits, superseded, cancelled_missing, snapshots
+
+    async def _cancel_expired_pending(self) -> int:
+        """Deterministic PENDING-expiry sweep (14A).
+
+        Cancels PENDING orders whose sponsoring decision passed its
+        ``valid_until`` and never filled — releasing the one-open-per-symbol
+        slot the way the backtest implies (no next open ⇒ no position). Runs
+        after the per-unit missing-bar handling, in its own transaction; any
+        failure rolls the whole batch back (PENDING stays PENDING) and retries
+        next cycle. ``expired_pending`` rides the log/metric surface only — no
+        ``cancel_reason`` column exists (migration-free by design).
+        """
+        now = datetime.now(UTC)
+        if self._broker_factory is None:
+            return 0
+        async with self._sessions() as session:
+            broker = self._broker_factory(session)
+            await broker.restore_state()
+            expired = await broker.list_pending_expired(now=now)
+            for order in expired:
+                try:
+                    if (
+                        await broker.cancel_pending(order, reason=CANCEL_EXPIRED_PENDING)
+                        is not None
+                    ):
+                        PAPER_PENDING_EXPIRED_TOTAL.inc()
+                        logger.info(
+                            "paper_order_cancelled",
+                            order_id=str(order.id),
+                            symbol=order.symbol,
+                            timeframe=order.timeframe,
+                            status=order.status,
+                            reason=CANCEL_EXPIRED_PENDING,
+                        )
+                except Exception as exc:  # noqa: BLE001 - roll back the batch
+                    logger.exception(
+                        "paper_order_cancel_failed",
+                        order_id=str(order.id),
+                        reason=CANCEL_EXPIRED_PENDING,
+                        error=str(exc),
+                    )
+                    raise
+            await session.commit()
+            return len(expired)
 
     async def _load_decision_payload(
         self, session: AsyncSession, *, result: DecideResult

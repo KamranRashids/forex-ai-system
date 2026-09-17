@@ -86,6 +86,9 @@ async def test_admin_promotes_viewer_to_trader(
     )
 
     users = await client.get("/api/v1/users", headers=admin_headers)
+    assert users.status_code == 200, (
+        f"expected 200 listing users, got {users.status_code}: {users.text[:500]}"
+    )
     target_id = next(u["id"] for u in users.json() if u["email"] == "rising-star@example.com")
 
     patch = await client.patch(
@@ -146,6 +149,9 @@ async def test_admin_deactivation_audited(
     await _create_user_with_role(client, db_sessionmaker, "target@example.com", "viewer")
 
     users = await client.get("/api/v1/users", headers=admin_headers)
+    assert users.status_code == 200, (
+        f"expected 200 listing users, got {users.status_code}: {users.text[:500]}"
+    )
     target_id = next(u["id"] for u in users.json() if u["email"] == "target@example.com")
 
     patch = await client.patch(

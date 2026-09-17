@@ -87,6 +87,20 @@ class DecisionInputs:
     parent_context: ContextInput | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class RiskLive:
+    """Ledger-derived absolute values the reporting mirror needs (14A).
+
+    The gate carries percentages; these raw projections let
+    :meth:`DecisionEngine._refresh_exposure` write truthful ``risk_state``
+    values (realized loss, peak equity) instead of re-writing its own inputs.
+    """
+
+    equity: float
+    peak_equity: float
+    cumulative_realized: float
+
+
 class DecisionAction(StrEnum):
     SKIP = "SKIP"
     PERSIST = "PERSIST"
@@ -314,6 +328,8 @@ class DecisionEngine:
         configured: list[str],
         crafts: OrchParams,
         risk: RiskParams,
+        gate: GateState | None = None,
+        live: RiskLive | None = None,
     ) -> DecideResult:
         started = datetime.now(UTC)
 
@@ -367,9 +383,10 @@ class DecisionEngine:
         atr, price = await _resolve_atr_price(
             self._session, symbol=symbol, timeframe=timeframe, bucket_ts=latest_bucket
         )
-        gate = await _gate_state(
-            self._session, symbol=symbol, now=self._now, equity=risk.paper_equity
-        )
+        if gate is None:
+            gate = await _gate_state(
+                self._session, symbol=symbol, now=self._now, equity=risk.paper_equity
+            )
         parent = await _parent_context(
             self._session, symbol=symbol, timeframe=timeframe, configured=configured, now=self._now
         )
@@ -467,7 +484,7 @@ class DecisionEngine:
             if status == DecisionStatus.BLOCKED and outcome.veto_code:
                 RISK_BLOCKED_TOTAL.labels(gate=outcome.veto_code).inc()
 
-        await self._refresh_exposure()
+        await self._refresh_exposure(gate=gate, live=live)
         await self._session.flush()
         return DecideResult(
             symbol=symbol,
@@ -500,13 +517,48 @@ class DecisionEngine:
         ).scalar_one_or_none()
         return row
 
-    async def _refresh_exposure(self) -> None:
-        """Persist a fresh aggregate account/daily exposure for observability."""
-        snapshots = await load_active_paper_snapshot(self._session, now=self._now)
-        total_notional = sum(s.notional for s in snapshots)
+    async def _refresh_exposure(
+        self,
+        *,
+        gate: GateState | None = None,
+        live: RiskLive | None = None,
+    ) -> None:
+        """Persist a fresh aggregate account/daily exposure for observability.
+
+        With a ledger-derived ``gate`` (+ ``live`` projections) the upsert is
+        **derived** — ``realized_loss`` / ``exposure`` / ``peak_equity`` /
+        ``max_drawdown`` mirror the ledger, closing the D8 pass-through loop.
+        Without them (legacy callers) the previous behavior is preserved.
+        """
         daily_key = self._now.astimezone(UTC).strftime("%Y-%m-%d")
         daily = await load_risk_state(self._session, scope="daily", period_key=daily_key)
         account = await load_risk_state(self._session, scope="account", period_key="global")
+
+        if gate is not None and live is not None:
+            exposure_pct = gate.exposure_used_pct
+            account_realized = (
+                max(0.0, -live.cumulative_realized) / live.equity if live.equity else 0.0
+            )
+            await upsert_risk_state(
+                self._session,
+                scope="account",
+                period_key="global",
+                realized_loss=account_realized,
+                peak_equity=live.peak_equity,
+                max_drawdown=gate.drawdown_used_pct,
+                exposure=exposure_pct,
+            )
+            await upsert_risk_state(
+                self._session,
+                scope="daily",
+                period_key=daily_key,
+                realized_loss=gate.daily_loss_used_pct,
+                exposure=exposure_pct,
+            )
+            return
+
+        snapshots = await load_active_paper_snapshot(self._session, now=self._now)
+        total_notional = sum(s.notional for s in snapshots)
 
         from app.core.config import get_settings
 

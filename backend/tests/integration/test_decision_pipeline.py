@@ -647,6 +647,223 @@ async def test_duplicate_trigger_creates_only_one_order(
 
 
 # ---------------------------------------------------------------------------
+# Phase 14A: ledger-derived risk gates (daily-loss / exposure / drawdown)
+# ---------------------------------------------------------------------------
+
+
+async def _run_engine_gated(db_sessionmaker: Any) -> Any:
+    """Restore the ledger, build the gate, and decide with it (14A worker path)."""
+    from app.broker.ledger import LedgerBroker
+    from app.broker.store import PostgresLedgerStore
+    from app.core.config import get_settings
+    from app.data.risk_config import load_risk_params
+    from app.decisions.engine import DecisionEngine, OrchParams, RiskLive
+    from app.decisions.ledger_gate import build_ledger_gate
+
+    async with db_sessionmaker() as session:
+        broker = LedgerBroker(store=PostgresLedgerStore(session=session))
+        await broker.restore_state()
+        view = await build_ledger_gate(broker=broker, symbol=SYMBOL, now=_NOW)
+
+        engine = DecisionEngine(session=session, now=_NOW)
+        risk = await load_risk_params(session, get_settings())
+        result = await engine.decide(
+            symbol=SYMBOL,
+            timeframe=TF,
+            configured=[TF],
+            crafts=OrchParams(cooldown_seconds=0),
+            risk=risk,
+            gate=view.gate,
+            live=RiskLive(
+                equity=view.equity,
+                peak_equity=view.peak_equity,
+                cumulative_realized=view.cumulative_realized,
+            ),
+        )
+        await session.commit()
+        return result, view
+
+
+async def _persist_closed_loss(db_sessionmaker: Any, *, loss_pct: float = 0.015) -> None:
+    """Persist a realized CLOSED loss today (SL exit on a fresh paper account).
+
+    ``loss_pct`` is relative to the 100k wallet; the position is sized so the
+    loss lands within the current UTC day.
+    """
+    from app.agents.base import Direction
+    from app.broker.ledger import LedgerBroker
+    from app.broker.store import PostgresLedgerStore
+
+    units = 100_000.0
+    exit_price = 1.10 - (loss_pct * 100_000.0) / units
+
+    async with db_sessionmaker() as session:
+        broker = LedgerBroker(store=PostgresLedgerStore(session=session))
+        order = await broker.submit_paper_order(
+            symbol=SYMBOL,
+            timeframe=TF,
+            direction=Direction.LONG,
+            ref_price=1.10,
+            ts=_BUCKET,
+            units=units,
+            stop_loss=exit_price + 0.0001,
+        )
+        assert order is not None
+        pos = await broker.fill_pending(order, open_price=1.10, ts=_BUCKET)
+        assert pos is not None
+        trade = await broker.evaluate_exit(symbol=SYMBOL, close=exit_price, ts=_NOW)
+        assert trade is not None and trade.net_pnl < 0
+        await broker.equity_snapshot(ts=_NOW)
+        await session.commit()
+
+
+async def _set_daily_loss_cap(db_sessionmaker: Any, *, cap: float) -> None:
+    from app.data.risk_config import set_risk_params
+
+    async with db_sessionmaker() as session:
+        await set_risk_params(
+            session, actor="admin@example.com", updates={"max_daily_loss_pct": cap}
+        )
+        await session.commit()
+
+
+async def _risk_state_row(db_sessionmaker: Any, *, scope: str, key: str) -> Any:
+    from app.models.risk_state import RiskStateRow
+
+    async with db_sessionmaker() as session:
+        return await session.scalar(
+            select(RiskStateRow).where(RiskStateRow.scope == scope, RiskStateRow.period_key == key)
+        )
+
+
+@pytest.mark.asyncio
+async def test_ledger_gate_persists_derived_risk_state(db_sessionmaker: Any) -> None:
+    """A closed loss today drives the derived risk_state (D8 pass-through fix)."""
+    await _seed_decision_inputs(db_sessionmaker)
+    await _persist_closed_loss(db_sessionmaker, loss_pct=0.015)
+
+    result, view = await _run_engine_gated(db_sessionmaker)
+
+    assert result.status.value == "PAPER"  # 1.5% + risk margin < default 3% daily cap
+    assert view.gate.daily_loss_used_pct > 0.0
+    assert view.gate.drawdown_used_pct > 0.0
+    assert view.gate.exposure_used_pct == 0.0  # the loss closed; no open exposure
+
+    account = await _risk_state_row(db_sessionmaker, scope="account", key="global")
+    daily = await _risk_state_row(
+        db_sessionmaker, scope="daily", key=_NOW.astimezone(UTC).strftime("%Y-%m-%d")
+    )
+    assert account is not None and daily is not None
+    assert float(daily.realized_loss) == pytest.approx(view.gate.daily_loss_used_pct, abs=1e-4)
+    assert float(account.realized_loss) > 0.0
+    assert float(account.peak_equity) == pytest.approx(view.peak_equity, abs=1e-4)
+    assert float(account.max_drawdown) == pytest.approx(view.gate.drawdown_used_pct, abs=1e-4)
+    assert float(account.exposure) == pytest.approx(0.0, abs=1e-9)
+
+
+@pytest.mark.asyncio
+async def test_ledger_daily_loss_gate_blocks_next_paper_intent(db_sessionmaker: Any) -> None:
+    """Realized loss above the cap vetoes the next PAPER intent (BLOCKED)."""
+    from app.models.decision import DecisionRow, DecisionStatus
+
+    await _seed_decision_inputs(db_sessionmaker)
+    await _persist_closed_loss(db_sessionmaker, loss_pct=0.02)
+    await _set_daily_loss_cap(db_sessionmaker, cap=0.015)  # 2% loss now over the cap
+
+    result, _view = await _run_engine_gated(db_sessionmaker)
+
+    assert result.status.value == "BLOCKED"
+    assert result.veto_code == "daily_loss"
+
+    async with db_sessionmaker() as session:
+        decision = (
+            (
+                await session.execute(
+                    select(DecisionRow).where(
+                        DecisionRow.symbol == SYMBOL, DecisionRow.timeframe == TF
+                    )
+                )
+            )
+            .scalars()
+            .one()
+        )
+    assert decision.status == DecisionStatus.BLOCKED.value
+    assert decision.veto_code == "daily_loss"
+
+
+@pytest.mark.asyncio
+async def test_pending_intent_does_not_consume_exposure(db_sessionmaker: Any) -> None:
+    """An OPEN position is required to consume exposure — PENDING never does."""
+    from app.agents.base import Direction
+    from app.broker.ledger import LedgerBroker
+    from app.broker.store import PostgresLedgerStore
+    from app.data.risk_config import set_risk_params
+
+    await _seed_decision_inputs(db_sessionmaker)
+    async with db_sessionmaker() as session:
+        await set_risk_params(
+            session, actor="admin@example.com", updates={"max_exposure_pct": 0.05}
+        )
+        await session.commit()
+    async with db_sessionmaker() as session:
+        broker = LedgerBroker(store=PostgresLedgerStore(session=session))
+        order = await broker.submit_paper_order(
+            symbol=SYMBOL,
+            timeframe=TF,
+            direction=Direction.LONG,
+            ref_price=1.10,
+            ts=_BUCKET,
+            units=100_000.0,
+        )
+        assert order is not None and order.status == "PENDING"
+        await session.commit()
+
+    result, view = await _run_engine_gated(db_sessionmaker)
+
+    assert view.open_position_count == 0
+    assert view.gate.exposure_used_pct == 0.0
+    assert result.status.value == "PAPER"  # the PENDING intent consumed no capital
+
+
+@pytest.mark.asyncio
+async def test_open_position_exposure_gate_blocks_next_intent(db_sessionmaker: Any) -> None:
+    """An OPEN position over the exposure cap vetoes the next PAPER intent."""
+    from app.agents.base import Direction
+    from app.broker.ledger import LedgerBroker
+    from app.broker.store import PostgresLedgerStore
+    from app.data.risk_config import set_risk_params
+
+    await _seed_decision_inputs(db_sessionmaker)
+    async with db_sessionmaker() as session:
+        await set_risk_params(
+            session, actor="admin@example.com", updates={"max_exposure_pct": 0.05}
+        )
+        await session.commit()
+    async with db_sessionmaker() as session:
+        broker = LedgerBroker(store=PostgresLedgerStore(session=session))
+        order = await broker.submit_paper_order(
+            symbol=SYMBOL,
+            timeframe=TF,
+            direction=Direction.LONG,
+            ref_price=1.10,
+            ts=_BUCKET,
+            units=100_000.0,
+        )
+        assert order is not None
+        pos = await broker.fill_pending(order, open_price=1.10, ts=_BUCKET)
+        assert pos is not None  # notional 110k -> exposure 1.10 without the cap
+        await broker.equity_snapshot(ts=_BUCKET)
+        await session.commit()
+
+    result, view = await _run_engine_gated(db_sessionmaker)
+
+    assert view.open_position_count == 1
+    assert view.gate.exposure_used_pct > 0.05
+    assert result.status.value == "BLOCKED"
+    assert result.veto_code == "exposure"
+
+
+# ---------------------------------------------------------------------------
 # Decisions + risk read APIs and RBAC
 # ---------------------------------------------------------------------------
 

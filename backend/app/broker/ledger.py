@@ -70,6 +70,10 @@ class LedgerStore(Protocol):
     async def update_position(self, position: PaperPositionRow) -> None: ...
     async def save_snapshot(self, snapshot: AccountSnapshotRow) -> None: ...
     async def latest_snapshot(self) -> AccountSnapshotRow | None: ...
+    #: (14A) read-only projections the live risk gate is built from.
+    async def load_open_position_rows(self) -> list[PaperPositionRow]: ...
+    async def load_realized_pnl_since(self, start_ts: datetime, end_ts: datetime) -> Decimal: ...
+    async def list_pending_expired(self, now: datetime) -> list[PaperOrderRow]: ...
 
 
 class LedgerBroker:
@@ -114,6 +118,41 @@ class LedgerBroker:
     def pending(self) -> list[PaperOrderRow]:
         """Pending orders as restored from the ledger (oldest first)."""
         return list(self._pending)
+
+    # --- 14A read-only projection (live risk-gate inputs) ----------------------
+
+    @property
+    def equity(self) -> float:
+        """Current account equity as rehydrated from the latest snapshot."""
+        return self._paper.equity
+
+    @property
+    def start_equity(self) -> float:
+        """The wallet's base equity this broker was constructed with."""
+        return self._paper.start_equity
+
+    @property
+    def peak_equity(self) -> float:
+        """Peak account equity tracked by the simulated wallet."""
+        return self._paper.peak_equity
+
+    @property
+    def max_drawdown_pct(self) -> float:
+        """Max drawdown percentage tracked from the peak (fraction, 0..1)."""
+        return self._paper.max_drawdown_pct
+
+    async def total_open_notional(self) -> float:
+        """Σ(units x entry_price) over OPEN positions (exposure numerator)."""
+        rows = await self._store.load_open_position_rows()
+        return sum(float(r.units) * float(r.entry_price) for r in rows)
+
+    async def realized_pnl_since(self, *, start_ts: datetime, end_ts: datetime) -> float:
+        """Realized net PnL of CLOSED positions exited in ``[start, end)``."""
+        return float(await self._store.load_realized_pnl_since(start_ts, end_ts))
+
+    async def list_pending_expired(self, *, now: datetime) -> list[PaperOrderRow]:
+        """PENDING orders whose sponsoring decision passed ``valid_until``."""
+        return await self._store.list_pending_expired(now)
 
     # --- entry (deferred: submit -> lifecycle fill) -----------------------------
 

@@ -184,6 +184,16 @@ PAPER_RECONCILE_FAILS_TOTAL = Counter(
     "paper_reconcile_fails_total",
     "Ledger/recovered-broker reconciliation failures (cycle aborted)",
 )
+PAPER_PENDING_EXPIRED_TOTAL = Counter(
+    "paper_pending_expired_total",
+    "Pending paper orders auto-cancelled as expired (decision past valid_until)",
+)
+PAPER_GATE_USED_PCT = Histogram(
+    "paper_gate_used_pct",
+    "Ledger-derived risk-gate usage fraction recorded per pair-cycle",
+    ["gate"],
+    buckets=(0.0, 0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 0.85, 1.0),
+)
 
 
 class MetricsMiddleware(BaseHTTPMiddleware):

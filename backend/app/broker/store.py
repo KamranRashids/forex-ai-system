@@ -15,8 +15,9 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.paper_ledger import (
@@ -86,6 +87,53 @@ class PostgresLedgerStore:
             select(PaperPositionRow).where(
                 PaperPositionRow.status == PaperPositionStatus.OPEN.value
             )
+        )
+        return list(result.scalars().all())
+
+    async def load_open_position_rows(self) -> list[PaperPositionRow]:
+        """Open position rows — the live risk gate's exposure source (14A).
+
+        Read-only projection identical to :meth:`list_open_positions`; kept as a
+        distinct name so the gate/tests never depend on the write-oriented
+        accessor that the lifecycle also uses.
+        """
+        return await self.list_open_positions()
+
+    async def load_realized_pnl_since(self, start_ts: datetime, end_ts: datetime) -> Decimal:
+        """Sum of ``net_pnl`` over CLOSED positions exited in ``[start, end)``.
+
+        The restart-safe, derivation-only source for the daily realized-loss
+        gate (no running accumulator to drift): same UTC-day semantics the
+        backtest driver keys on.
+        """
+        total = await self._session.scalar(
+            select(func.coalesce(func.sum(PaperPositionRow.net_pnl), 0)).where(
+                PaperPositionRow.status == PaperPositionStatus.CLOSED.value,
+                PaperPositionRow.exit_ts.is_not(None),
+                PaperPositionRow.exit_ts >= start_ts,
+                PaperPositionRow.exit_ts < end_ts,
+            )
+        )
+        return Decimal(str(total))
+
+    async def list_pending_expired(self, now: datetime) -> list[PaperOrderRow]:
+        """PENDING orders whose sponsoring decision passed its ``valid_until``.
+
+        A decision past its window (``bucket_ts + 4 x tf``) that never filled is
+        permanently un-fillable; the sweep releases its one-open-per-symbol
+        capacity. Idempotent — only PENDING rows are returned.
+        """
+        from app.models.decision import DecisionRow
+
+        expired_ids = select(DecisionRow.id).where(DecisionRow.valid_until < now)
+        result = await self._session.execute(
+            select(PaperOrderRow)
+            .where(
+                PaperOrderRow.status == PaperOrderStatus.PENDING.value,
+                PaperOrderRow.decision_id.is_not(None),
+                PaperOrderRow.decision_id.in_(expired_ids),
+            )
+            .order_by(PaperOrderRow.created_at, PaperOrderRow.id)
         )
         return list(result.scalars().all())
 

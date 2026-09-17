@@ -20,6 +20,7 @@ from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatc
 from app.core.config import Settings
 from app.core.constants import (
     JWT_ALGORITHM,
+    JWT_LEEWAY_SECONDS,
     TOKEN_TYPE_ACCESS,
     TOKEN_TYPE_REFRESH,
 )
@@ -109,7 +110,12 @@ def decode_token(token: str, *, expected_type: str, settings: Settings) -> dict[
         AuthenticationError: on signature/expiry/type/format problems.
     """
     try:
-        payload: dict[str, Any] = jwt.decode(token, settings.secret_key, algorithms=[JWT_ALGORITHM])
+        payload: dict[str, Any] = jwt.decode(
+            token,
+            settings.secret_key,
+            algorithms=[JWT_ALGORITHM],
+            leeway=timedelta(seconds=JWT_LEEWAY_SECONDS),
+        )
     except jwt.ExpiredSignatureError as exc:
         raise AuthenticationError("Token has expired") from exc
     except jwt.InvalidTokenError as exc:

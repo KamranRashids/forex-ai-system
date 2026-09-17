@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+from decimal import Decimal
 
 from app.broker.adapter import BrokerAdapter
 from app.broker.ledger import LedgerBroker
@@ -33,6 +34,15 @@ class _NullStore:
         return None
 
     async def list_open_positions(self) -> list[object]:
+        return []
+
+    async def load_open_position_rows(self) -> list[object]:
+        return []
+
+    async def load_realized_pnl_since(self, start_ts: object, end_ts: object) -> Decimal:
+        return Decimal("0")
+
+    async def list_pending_expired(self, now: object) -> list[object]:
         return []
 
     async def list_closed_positions(self) -> list[object]:

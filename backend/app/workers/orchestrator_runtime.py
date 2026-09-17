@@ -49,11 +49,19 @@ def _paper_ledger_broker(session: AsyncSession) -> LedgerBroker:
     Uses the *same* ``AsyncSession`` as the decision transaction, so decision,
     risk evaluation, order, and position persist atomically. This is the only
     broker implementation wired in SAFE MODE — a live broker cannot exist here.
+
+    (14A) The wallet's base equity tracks ``risk_paper_equity`` (the same value
+    the sizing math anchors on) instead of the hard-coded 100,000 constant, so
+    a tuned ``risk_paper_equity`` stays the single source of truth. The default
+    is unchanged (both are 100,000), so default deployments are byte-identical.
     """
     from app.broker.ledger import LedgerBroker
     from app.broker.store import PostgresLedgerStore
 
-    return LedgerBroker(store=PostgresLedgerStore(session=session))
+    return LedgerBroker(
+        store=PostgresLedgerStore(session=session),
+        start_equity=get_settings().risk_paper_equity,
+    )
 
 
 async def run_orchestrator(settings: Settings | None = None) -> None:

@@ -61,6 +61,7 @@ class InMemoryStore:
         self.positions: list[PaperPositionRow] = []
         self.snapshots: list[AccountSnapshotRow] = []
         self.decision_buckets: dict[uuid.UUID, datetime] = {}
+        self.decision_expiry: dict[uuid.UUID, datetime] = {}
 
     async def save_order(self, order: PaperOrderRow) -> None:
         self.orders.append(order)
@@ -94,6 +95,27 @@ class InMemoryStore:
 
     async def list_open_positions(self) -> list[PaperPositionRow]:
         return [p for p in self.positions if p.status == PaperPositionStatus.OPEN.value]
+
+    async def load_open_position_rows(self) -> list[PaperPositionRow]:
+        return await self.list_open_positions()
+
+    async def load_realized_pnl_since(self, start_ts: datetime, end_ts: datetime) -> Decimal:
+        return sum(
+            (p.net_pnl or Decimal("0"))
+            for p in self.positions
+            if p.status == PaperPositionStatus.CLOSED.value
+            and p.exit_ts is not None
+            and start_ts <= p.exit_ts < end_ts
+        )
+
+    async def list_pending_expired(self, now: datetime) -> list[PaperOrderRow]:
+        return [
+            o
+            for o in self.orders
+            if o.status == PaperOrderStatus.PENDING.value
+            and o.decision_id is not None
+            and (self.decision_expiry.get(o.decision_id) or datetime.min.replace(tzinfo=UTC)) < now
+        ]
 
     async def list_closed_positions(self) -> list[PaperPositionRow]:
         return [p for p in self.positions if p.status == PaperPositionStatus.CLOSED.value]

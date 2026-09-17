@@ -17,6 +17,13 @@ REFRESH_COOKIE_NAME: str = "refresh_token"
 
 JWT_ALGORITHM: str = "HS256"
 
+#: Clock-skew tolerance for JWT ``iat``/``exp`` verification (seconds). ``iat``
+#: is floored to the second at issuance, so a small backward wall-clock step
+#: (e.g. NTP discipline under load) would otherwise intermittently reject
+#: freshly issued tokens; 2s stays far below the 30-minute access lifetime and
+#: only guards against host clock steps, never weakening signature/type checks.
+JWT_LEEWAY_SECONDS: int = 2
+
 
 class AuditActions:
     """Canonical audit_log.action values (append-only vocabulary)."""
