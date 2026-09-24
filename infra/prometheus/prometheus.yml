@@ -9,6 +9,10 @@ global:
   scrape_interval: 15s
   evaluation_interval: 15s
 
+# Phase 14B: alert rules (alerts are OBSERVABILITY ONLY — SAFE MODE preserved).
+rule_files:
+  - /etc/prometheus/prometheus-rules.yml
+
 scrape_configs:
   - job_name: forex-ai-api
     metrics_path: /metrics

@@ -295,6 +295,7 @@ services:
       - "${PROMETHEUS_PORT:-9090}:9090"
     volumes:
       - ./infra/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./infra/prometheus/prometheus-rules.yml:/etc/prometheus/prometheus-rules.yml:ro
       - promdata:/prometheus
     depends_on:
       api:

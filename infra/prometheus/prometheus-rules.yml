@@ -1,0 +1,200 @@
+# ============================================================================
+# Forex AI System — Prometheus alert rules (Phase 14B — Observability Hardening)
+# Loaded by prometheus.yml via `rule_files` (see ../prometheus.yml).
+#
+# Every expression below was verified against the published metrics in
+# backend/app/core/metrics.py and backend/app/monitor/worker_metrics.py plus
+# the scrape jobs in ../prometheus.yml (forex-ai-api, forex-ai-workers).
+# BEHAVIOUR: alerts are OBSERVABILITY ONLY — they cannot stop/start trading,
+# change risk decisions, gate execution, or alter portfolio state (SAFE MODE).
+# ============================================================================
+
+groups:
+  - name: forex-ai-process
+    rules:
+      # W1 — a worker exporter stopped being scraped (process/exporter died).
+      # `up{job="forex-ai-workers"}` goes to 0 only when a scrape target is
+      # unreachable. This is the ONLY reliable process-death signal:
+      # `forex_worker_up` is never set to 0, so use `up` (verified, Phase 14B).
+      - alert: WorkerProcessDown
+        expr: up{job="forex-ai-workers"} == 0
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: Worker process/exporter is unreachable
+          description: One of the forex-ai-workers exporters (worker-*:9101-9105) stopped being scraped.
+          investigation: docker compose ps && docker compose logs <worker> (or docker ps for forex-ai-worker-*)
+          runbook: docs/runbook.md
+
+      # W2 — the API's /metrics endpoint stopped being scraped (API down).
+      # `worker_up` is only recomputed while the API is scraped, so it can keep
+      # a stale value when the API dies; `up` is the authoritative signal here.
+      - alert: ApiDown
+        expr: up{job="forex-ai-api"} == 0
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: API /metrics scraped target is down
+          description: The forex-ai-api scrape target (api:8000) stopped responding to /metrics.
+          investigation: docker compose ps && docker compose logs api
+          runbook: docs/runbook.md
+
+      # W3 — a worker heartbeat is stale per Redis /system/status view (role down).
+      # Note: only evaluated while the API is scraped; AiDown (W2) covers API loss.
+      - alert: WorkerRoleDown
+        expr: worker_up{job="forex-ai-api"} == 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: Worker heartbeat role is down
+          description: worker_up (Redis heartbeat freshness per /system/status) is 0 for at least one role.
+          investigation: curl -s localhost:8000/system/status | jq; docker exec forex-ai-redis-1 redis-cli exists worker:heartbeat:<role>
+          runbook: docs/runbook.md
+
+  - name: forex-ai-orchestrator
+    rules:
+      # W4 — the orchestrator's scan cycle counter stopped advancing while the
+      # orchestrator process itself is still up (loop stalled). The scan runs
+      # every SCAN_EVERY_CYCLES=120 polls (~24s at ORCH_POLL_MS=200), so a 5m
+      # window with rate==0 means no scan at all. Starts as warning because the
+      # (safe) lock-lost pause path also halts scans.
+      - alert: OrchestratorStalled
+        expr: rate(orch_cycles_total[5m]) == 0 and forex_worker_up{worker="orchestrator"} == 1
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Orchestrator loop is not advancing
+          description: No orch_cycles_total increase in 5m while the orchestrator exporter reports up.
+          investigation: docker logs forex-ai-worker-orchestrator-1 --tail 200 (look for lock_lost/lock_pending)
+          runbook: docs/runbook.md
+
+      # W5 — a paper-lifecycle reconcile failed (cycle aborted); fail-closed engaged.
+      - alert: PaperReconcileFailed
+        expr: increase(paper_lifecycle_cycles_total{outcome="reconcile_failed"}[15m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: Paper ledger reconciliation failed
+          description: paper_lifecycle_cycles_total{outcome="reconcile_failed"} increased in the last 15m.
+          investigation: docker logs forex-ai-worker-orchestrator-1 (look for paper_lifecycle_reconcile_failed)
+          runbook: docs/runbook.md
+
+      # W6 — per-unit paper lifecycle errors (unit skipped, not fatal).
+      - alert: PaperLifecycleDegraded
+        expr: increase(paper_lifecycle_errors_total[15m]) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Paper lifecycle unit errors
+          description: At least one paper lifecycle unit failed in the last 15m (skipped this cycle).
+          investigation: docker logs forex-ai-worker-orchestrator-1 --tail 200
+          runbook: docs/runbook.md
+
+      # W7 — pending paper orders expired (decision past valid_until). Ordinary
+      # under data gaps; advisory only. Distinct from paper_orders_cancelled_total.
+      - alert: PendingExpiryBurst
+        expr: increase(paper_pending_expired_total[15m]) > 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: Pending paper orders expired
+          description: paper_pending_expired_total increased; pending decisions passed valid_until (advisory).
+          investigation: docker logs forex-ai-worker-orchestrator-1 --tail 200
+          runbook: docs/runbook.md
+
+      # W11 — ledger-derived risk gate usage p95 at/above 90%. Vetoes are normal
+      # risk behaviour; this flags "repeatedly near the cap — review state".
+      - alert: GatePressureHigh
+        expr: histogram_quantile(0.95, sum by (le, gate) (rate(paper_gate_used_pct_bucket[15m]))) >= 0.9
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: Risk gate usage p95 at/above 90%
+          description: A ledger-derived gate (exposure/correlation/daily_loss/drawdown) sat >= 90% used over 30m.
+          investigation: curl -s localhost:8000/system/status | jq; Grafana Paper Trading dashboard (Row A)
+          runbook: docs/runbook.md
+
+  - name: forex-ai-data
+    rules:
+      # W8 — market data staleness breach. market-closed: fires during weekends and
+      # holidays when feeds legitimately stop; verify the session before acting.
+      - alert: StalenessBreach
+        expr: staleness_breach_count > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Stale market data series detected
+          description: staleness_breach_count > 0 (may be market-closed — confirm the session before escalation).
+          investigation: curl -s localhost:8000/system/status | jq; check market/session calendar
+          runbook: docs/runbook.md
+
+      # W9 — any HTTP 5xx served by the API in a 5m window.
+      - alert: Api5xxRate
+        expr: sum(rate(http_requests_total{status=~"5.."}[5m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: API is returning 5xx responses
+          description: http_requests_total{status=~"5.."} rate > 0 in the last 5m (single transient 5xx is not a page).
+          investigation: docker compose logs api --tail 200
+          runbook: docs/runbook.md
+
+# ----------------------------------------------------------------------------
+# Optional rules (Phase 14B plan §5 / §16.5): DISABLED BY DEFAULT — opt-in only.
+# These definitions are retained for reference; enabling requires an explicit
+# human decision. Uncomment a block, run `promtool check rules`, and reload.
+# ----------------------------------------------------------------------------
+#  - name: forex-ai-optional
+#    rules:
+#      # W12 — many recent risk-gate vetoes (advisory; vetoes are legitimate).
+#      - alert: VetoChatter
+#        expr: increase(risk_blocked_total[30m]) > 0
+#        for: 0m
+#        labels:
+#          severity: warning
+#        annotations:
+#          summary: Repeated risk-gate vetoes
+#          description: risk_blocked_total increased over the last 30m — review gate state (advisory).
+#          investigation: Grafana Paper Trading dashboard A3/A1; curl -s localhost:8000/system/status | jq
+#          runbook: docs/runbook.md
+#
+#      # W13 — paper lifecycle throttling actively (catchup depth bounded).
+#      - alert: CatchupThrottled
+#        expr: increase(paper_catchup_bound_hits_total[30m]) > 0
+#        for: 30m
+#        labels:
+#          severity: warning
+#        annotations:
+#          summary: Paper catch-up throttling
+#          description: paper_catchup_bound_hits_total increased — lifecycle hit its per-cycle bound.
+#          investigation: docker logs forex-ai-worker-orchestrator-1 --tail 200
+#          runbook: docs/runbook.md
+#
+#      # W10 — sustained p95 orchestrator decision latency > 5s. DISABLED: the
+#      # current orch_decision_latency_seconds histogram's highest explicit bucket
+#      # is 2.0s, so histogram_quantile(0.95, ...) is bounded above by 2.0 and
+#      # > 5 is mathematically unreachable. W10 is intentionally disabled rather
+#      # than deployed as a dead alert; it requires future histogram bucket
+#      # expansion beyond 5s (e.g. ..., 2.0, 5.0, 10.0) before activation, via a
+#      # separately approved instrumentation change. Intended expression is
+#      # retained unchanged and must not be lowered below 5s.
+#      - alert: DecisionLatencyHigh
+#        expr: histogram_quantile(0.95, sum(rate(orch_decision_latency_seconds_bucket[5m])) by (le)) > 5
+#        for: 15m
+#        labels:
+#          severity: warning
+#        annotations:
+#          summary: Decision latency p95 above provisional threshold
+#          description: p95 decision build/persist latency exceeded 5s (deferred — see runbook §8).
+#          investigation: Grafana Runtime Overview decision-latency panel; docker logs forex-ai-worker-orchestrator-1
+#          runbook: docs/runbook.md
