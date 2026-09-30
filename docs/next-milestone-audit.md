@@ -4,6 +4,17 @@
 > `v0.1.0` tag (`d28af88`). No project files were modified; this document is the only
 > artifact produced. All statements below are grounded in the inspected repository.
 
+> **SUPERSEDED (2026-09-30).** This is a **historical** audit against the `v0.1.0`
+> baseline (`d28af88`). The Phase 13 work it proposes as the next milestone has
+> subsequently been **implemented** through **Phase 13A, Phase 13B, Phase 13C,
+> Phase 13D, Phase 14A, and Phase 14B** — see `PROJECT_STATUS.md` §3 for the live
+> record. Statements throughout this document that describe the paper ledger /
+> lifecycle, portfolio, or observability surfaces as missing or planned do **not**
+> reflect the current repository and must not be used as the source of truth. Live
+> trading, an executor worker, a real broker, and real-money execution remain
+> explicitly **out of scope**. This document is retained as a planning record only;
+> it is not a development roadmap and no new plan is derived from it.
+
 ---
 
 ## 1. Current v0.1.0 baseline

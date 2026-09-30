@@ -71,7 +71,7 @@ docker exec forex-ai-redis-1 redis-cli ttl lock:orchestrator
     probe per worker (see §4.4).
 - **Prometheus:** http://localhost:9090 — targets → `forex-ai-api` and the
   `forex-ai-workers` job (5 worker exporters)
-  - `up{job="forex-ai-api"}`; `worker_up` (all 4 roles should = 1)
+  - `up{job="forex-ai-api"}`; `worker_up` (all 5 roles should = 1)
   - `forex_worker_up` (all 5 workers should = 1)
 - **Grafana:** http://localhost:3001 (admin / admin — dev default; rotate before wider use)
   - "Runtime Overview v0" dashboard: worker up/age, staleness, HTTP rate/latency
@@ -268,7 +268,7 @@ docker run --rm --entrypoint /bin/promtool \
   histogram cap at 2s its `> 5s` condition cannot fire; activation requires a
   separate approved instrumentation change to extend the
   `orch_decision_latency_seconds` buckets beyond 5s.
-- W8 (`PaperExitsSharpDrop`) is intentionally tolerant of market-closed hours —
+- W8 (`StalenessBreach`) is intentionally tolerant of market-closed hours —
   judge drops against whether the market was active (session calendar) before
   treating as an alert.
 - Sentinel-based rules (`alert.risk_brake`, lifecycle/reconcile) overlap with

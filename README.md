@@ -32,13 +32,16 @@ Phases follow `IMPLEMENTATION_PLAN.md` §14. Each phase is verified before the n
 |---|---|---|
 | 0–9 | Foundation, backend core, market data, agents, decision pipeline, backtesting, monitoring, alerts, frontend | ✅ done |
 | 10 | Security, performance & release hardening | ✅ done — accepted 2026-09-12 (`docs/phase10-final-audit.md`) |
-| 11 | Documentation & GitHub readiness — `v0.1.0` release prep | 🔶 in progress |
+| 11 | Documentation & GitHub readiness — `v0.1.0` release prep | ✅ done — `v0.1.0` tag at `d28af88` |
 | 12 | Observability & data-source truth (candles/latest-prices API, per-process exporters) | ✅ done |
-| — | Paper-executor loop, frontend portfolio & charts, live trading | ⏸️ deferred by design (SAFE MODE) |
+| 13A–D | Paper trading engine — ledger (migration `0008`), portfolio observability, decisions→ledger, paper lifecycle | ✅ done |
+| 14A | Risk & ledger controls (ledger gate, fail-closed safe-mode tests) | ✅ done |
+| 14B | Observability hardening — monitoring suite, Prometheus alert rules, Paper Trading dashboard | ✅ done |
+| — | Executor / real broker / live-real-money trading, M5–D1 activation, advanced charts, multi-account ledger | out of scope / deferred (SAFE MODE) |
 
-Current release target: **v0.1.0** (backend `0.1.0`, frontend `0.1.0`). Tag creation and
-publication are future steps requiring explicit operator approval. Live tracker:
-[`PROJECT_STATUS.md`](PROJECT_STATUS.md).
+Release: **v0.1.0** (backend `0.1.0`, frontend `0.1.0`) — annotated tag created at
+`d28af88`. Tag publication (push) remains a future step requiring explicit operator
+approval. Live tracker: [`PROJECT_STATUS.md`](PROJECT_STATUS.md).
 
 ## Quickstart
 

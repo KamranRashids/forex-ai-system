@@ -1,25 +1,27 @@
 # PROJECT_STATUS.md — Forex AI System (Multi-Agent, SAFE MODE)
 
-Updated: 2026-09-12 (UTC). Branch: `main` (19 commits). The working tree additionally
-contains the completed Phase 10 hardening work and Phase 11 release-preparation changes
-**pending final git review** — they are uncommitted and un-tagged until approval.
-Secrets: variable names are listed; all values are `[REDACTED]`.
+Updated: 2026-09-30 (UTC). Branch: `main` — Phases 0–14B complete and committed at
+`10cf687` (Phase 14B observability hardening); Phase A completion closeout applied
+2026-09-30. Release tag `v0.1.0` exists at `d28af88`; push/publication remain future
+steps pending explicit operator approval. Secrets: variable names are listed; all
+values are `[REDACTED]`.
 
 ---
 
 ## 1. Current Status
 
-- **Phases 0–10 complete; Phase 10 accepted** (`docs/phase10-final-audit.md`).
-- **Phase 12 (observability & data-source truth) complete.**
-- **Phase 11 — Documentation & GitHub Readiness (v0.1.0 release prep) — in progress.**
+- **Phases 0–14B complete** — Phase 10 accepted (`docs/phase10-final-audit.md`),
+  Phase 11 release prep, Phase 12 observability & data-source truth, Phase 13A–D
+  paper trading engine, Phase 14A risk/ledger controls, Phase 14B observability
+  hardening.
 - **SAFE MODE is active** — structural, 5 enforcement layers; paper/backtest only;
   live order execution does not exist anywhere in the codebase.
-- **Release target:** `v0.1.0` (version synchronized across backend `0.1.0` and
-  frontend `0.1.0`). Tag creation and publication are **future steps** requiring
-  explicit operator approval.
+- **Release:** `v0.1.0` (backend `0.1.0`, frontend `0.1.0`). Annotated tag `v0.1.0`
+  exists at `d28af88` (`release: v0.1.0`). Tag publication (push) is a **future step**
+  requiring explicit operator approval.
 - **Blocked:** real-CA TLS and HSTS — require a production domain (see §5).
 
-Live stack (probed 2026-09-12): **11/11 compose services healthy** — api, postgres,
+Live stack (probed 2026-09-30): **11/11 compose services healthy** — api, postgres,
 redis, prometheus, grafana, web, and the 5 workers. `http://localhost:3000` → HTTP 200
 (frontend); `http://localhost:8000` → API.
 
@@ -29,22 +31,22 @@ redis, prometheus, grafana, web, and the 5 workers. `http://localhost:3000` → 
 
 | # | Item | Status | Evidence |
 |---|------|--------|----------|
-| 1 | Repo initialized & git history | ✅ Done | `git log` 78b780b init → a6cddb7 (19 commits, `main`) |
+| 1 | Repo initialized & git history | ✅ Done | `git log` 78b780b init → 10cf687 (Phases 0–14B, `main`) |
 | 2 | Backend core (config, DB, auth, health) | ✅ Done | `app/core`, `app/db`, `app/api/v1/auth`, health probes; 26 SAFE-MODE config tests |
-| 3 | DB schema via Alembic | ✅ Done | migration head `0007` applied; `alembic current` = `0007 (head)` |
+| 3 | DB schema via Alembic | ✅ Done | migration head `0008` applied; `alembic current` = `0008 (head)` (`0008_phase13_paper_ledger`) |
 | 4 | Authz / RBAC | ✅ Done | viewers/admins matrix, token rotation, permissions integration tests |
 | 5 | Market data layer | ✅ Done | provider-independent (ADR-0003); synthetic active; candles in PG |
 | 6 | Agents (technical/regime/fundamental/sentiment) | ✅ Done | `app/agents/*`, runtime worker healthy (`forex_worker_up=1`) |
 | 7 | Orchestrator + risk engine | ✅ Done | decisions emit risk-gated PAPER intents; worker healthy |
-| 8 | Paper-trading loop (live simulated fills) | ⚠️ Deferred by design | `PaperBroker` exists but is exercised only by the backtester; no executor worker (SAFE MODE) |
+| 8 | Paper lifecycle (simulated fills) | ✅ Done | paper lifecycle implemented (`PaperBroker`), no executor — `app/broker/` + migration `0008`; live-paper loop operational (SAFE MODE) |
 | 9 | Backtesting engine | ✅ Done | `app/backtest/*` + API + CLI; driver tests incl. stub tap |
 | 10 | Alerts pipeline (+ WS feed) | ✅ Done | alert worker healthy; alerts view + restore; WS authenticated |
 | 11 | REST + WebSocket API | ✅ Done | routers incl. Phase 12 market router; candles endpoint RBAC-gated |
-| 12 | Frontend | ✅ Running | web container healthy; `http://localhost:3000` HTTP 200 (pages: login/signals/alerts/backtests/home) |
+| 12 | Frontend | ✅ Running | web container healthy; `http://localhost:3000` HTTP 200 (pages: login/signals/alerts/backtests/portfolio/home) |
 | 13 | Observability API metrics | ✅ Done | `/metrics` live: `http_requests_total`, `worker_up` gauges |
 | 14 | Per-process worker exporters | ✅ Done | 9101–9105 all `forex_worker_up=1` (in-container check) |
 | 15 | Prometheus scraping | ✅ Running | container healthy; scrapes api `/metrics` + 5 worker exporters |
-| 16 | Grafana dashboard | ✅ Running | healthy on `:3001`; datasource `prometheus:9090` up |
+| 16 | Grafana dashboards | ✅ Running | healthy on `:3001`; datasource `prometheus:9090` up; Runtime Overview + Paper Trading v0 dashboards |
 | 17 | Healthchecks truthful | ✅ Done | compose uses `worker_healthcheck.py`; 5/5 workers healthy, heartbeats fresh |
 | 18 | `/health/live` + `/health/ready` | ✅ Live | both `{"status":"ok","mode":"safe"}` |
 | 19 | `/system/status` | ✅ Live | 200; db/redis/migrations/safe_mode OK; version `0.1.0`; 5 workers `up` |
@@ -58,13 +60,14 @@ redis, prometheus, grafana, web, and the 5 workers. `http://localhost:3000` → 
 | 27 | Docs (runbook, safe-mode, ADRs, threat model) | ✅ Done | `docs/` incl. 5 ADRs, threat model, hardening/audit records |
 | 28 | README quickstart | ✅ Fixed | updated 2026-09-12: status table + ports + health/readiness + security + backup/restore links |
 | 29 | IMPLEMENTATION_PLAN status | ✅ Fixed | header/approval status updated 2026-09-12 to “approved & implemented” |
-| 30 | Release readiness (tag, changelog, publish) | 🔶 In progress | CHANGELOG created; frontend version synced to 0.1.0; release checklist added; **`v0.1.0` tag + publication are FUTURE steps** |
+| 30 | Release readiness (tag, changelog, publish) | ✅ Done | CHANGELOG created; frontend version synced to 0.1.0; release checklist complete; **`v0.1.0` annotated tag created at `d28af88`**; publication (push) is a FUTURE step |
 
-**Test/lint/type/build (current tree):** backend unit **463 passed @ 92.61%** (≥90
-gate); backend integration **102 passed** (real PG/Redis); frontend vitest **66/66
-passed**; `ruff check` clean; `mypy app` clean (strict, 137 files); `eslint` clean;
-`tsc --noEmit` clean; `next build` clean; pip-audit 0 findings; npm-audit policy gate
-green (documented PostCSS exceptions only).
+**Test/lint/type/build (Phase A closeout, 2026-09-30):** backend unit **580 passed @
+93.62%** (≥90 gate); backend integration **124 passed** (real PG/Redis, 0 skipped);
+frontend vitest **80/80 passed**; `ruff check` clean; `ruff format --check` clean (241
+files); `mypy app` clean (strict, 146 files); `eslint` clean; `tsc --noEmit` clean;
+`next build` clean; pytest `-m safety` subset green (0 skips / 0 xfails); pip-audit 0
+findings; npm-audit policy gate green (documented PostCSS exceptions only).
 
 ---
 
@@ -74,19 +77,40 @@ green (documented PostCSS exceptions only).
   Phase 10 hardening: threat model, dependency audits + CI CVE gates, CSP/security
   headers, trusted-proxy rate limiting, prod resource limits, staging TLS, backup/
   restore tooling, and the Phase 10 final audit sign-off.
-- 463 unit + 102 integration backend and 66 frontend tests; ruff/mypy/eslint/tsc/
-  next-build clean.
+- **Phase 11 — release prep:** `CHANGELOG.md`, `docs/release-checklist.md`, `SECURITY.md`,
+  version sync to `0.1.0`, stale-doc pass; annotated tag `v0.1.0` created at `d28af88`.
+- **Phase 13A–D — paper trading engine (SAFE MODE paper only):** migration `0008`
+  (`orders_paper`, `positions`, `account_snapshots`); async DB-backed ledger reusing the
+  existing `PaperBroker` fill/cost math (`app/broker/ledger.py`, `store.py`,
+  `lifecycle.py`, `adapter.py`, `positions.py`, `costs.py`); decisions→ledger wiring;
+  operational paper lifecycle with **no executor worker**; portfolio API + frontend
+  `/portfolio` page.
+- **Phase 14A — risk/ledger controls:** ledger gate (`app/decisions/ledger_gate.py`) +
+  risk-gated paper intent handling with fail-closed safe-mode tests.
+- **Phase 14B — observability hardening:** monitoring validation test suite,
+  Prometheus alert rules W1–W9 + W11 (10 active), Paper Trading Grafana dashboard,
+  promtool-validated config + rules, alert-name reconciliation.
+- 580 unit + 124 integration backend and 80 frontend tests; coverage 93.62% (≥90
+  gate); ruff/mypy/eslint/tsc/next-build clean; 0 skips / 0 xfails.
 - CI: backend quality + integration (real PG/Redis) + pip-audit; frontend
   esLint/tsc/build/npm-audit; docker image build + Trivy scan. Dependabot active.
-- Alembic `0007 (head)`; all 5 workers healthy with fresh heartbeats; `/system/status`
+- Alembic `0008 (head)`; all 5 workers healthy with fresh heartbeats; `/system/status`
   fully green; SAFE MODE enforced at 5 layers.
 
 ## 4. Deferred by Design (not bugs, not planned for v0.1.0)
 
-- **Paper-executor loop:** orchestrator emits fully risk-gated PAPER intents, but no
-  live simulated-fill worker consumes them; `PaperBroker` is exercised by the backtester.
-- **Frontend portfolio/equity/positions page and charts page:** not implemented.
-- **Market timeframes:** M15/H1/H4 active; M5/D1 support exists but is config-gated off.
+- **Executor / real broker / live trading:** NOT implemented by design — no executor
+  worker, no real broker module, no live/real-money execution path anywhere in the
+  codebase (SAFE MODE). This is an explicit non-goal, not a deferred roadmap item.
+- **Frontend charts:** `/portfolio` is implemented; advanced charting (charting
+  library, candlesticks, axes/tooltips) is not.
+- **Market timeframes:** M15/H1/H4 active; M5/D1 support exists but is config-gated
+  off (not activated).
+- **D10 decision-bar vs wall-clock alignment** and **`events.fills` / WS `fills`
+  topics:** deferred (potential future work, not scheduled).
+- **Multi-account ledger, gate-snapshot UI, trader-exposure UI, broader rate
+  limiting, Alertmanager, real-CA TLS/HSTS:** future/out-of-scope for the SAFE-MODE
+  v0.1.x release.
 - **External integrations:** live-market/LLM providers remain unconfigured (zero-key
   exit criterion): `MARKET_DATA_PROVIDER=synthetic`, `LLM_PROVIDER=none` are the
   defaults; OANDA/Finnhub/LLM tokens are optional and never required.
@@ -99,16 +123,16 @@ green (documented PostCSS exceptions only).
 - Completion steps are itemized in `docs/phase10-final-audit.md` §8 and
   `docs/phase11-release-audit.md` §8.
 
-## 6. Phase 11 — Release Preparation (in progress)
+## 6. Phase 11 — Release Preparation (complete)
 
 - [x] Frontend version synchronized to `0.1.0` (`package.json`, `package-lock.json`)
 - [x] `CHANGELOG.md` created for `[0.1.0] - 2026-09-12`
 - [x] Stale docs corrected: `README.md`, `IMPLEMENTATION_PLAN.md`, `docs/architecture.md`,
       `docs/safe-mode.md`, `docs/runbook.md`
 - [x] `SECURITY.md` added (concise security-reporting guidance)
-- [x] `docs/release-checklist.md` added
+- [x] `docs/release-checklist.md` added and completed (Phase A closeout, 2026-09-30)
+- [x] Annotated tag `v0.1.0` created at `d28af88` (`release: v0.1.0`)
 - [x] Final git review + lightweight verification (see §8)
-- [ ] **FUTURE:** create annotated tag `v0.1.0` (requires explicit operator approval)
 - [ ] **FUTURE:** push tag / publish (requires explicit operator approval)
 
 ## 7. Reviewed by This Audit (2026-09-12, read-only)
@@ -129,14 +153,14 @@ curl localhost:8000/system/status  # version 0.1.0, migrations ok, workers up
 curl -I localhost:3000/            # UI (web) HTTP 200
 make backup                     # backup + sha256 to backups/
 make restore FILE=backups/forex_ai-*.sql.gz   # isolated temp-DB restore drill
-(cd frontend && npm test)       # vitest 66
+(cd frontend && npm test)       # vitest 80
 ```
 
 ## 9. Final Completion Checklist
 
-- [ ] `git diff --check` clean; no secrets/certs/backups staged
-- [ ] `make verify` green on final tree
-- [ ] `docker compose ps` shows all 11 services healthy
-- [ ] CHANGELOG `[0.1.0]` finalized; frontend version `0.1.0`
-- [ ] **Tag `v0.1.0` created (FUTURE — requires explicit user approval)**
-- [ ] Release published (FUTURE)
+- [x] `git diff --check` clean; no secrets/certs/backups staged
+- [x] `make verify` green on final tree (ruff + mypy + pytest 704 + eslint + tsc)
+- [x] `docker compose ps` shows all 11 services healthy
+- [x] CHANGELOG `[0.1.0]` finalized; frontend version `0.1.0`
+- [x] **Tag `v0.1.0` created at `d28af88` (publication remains FUTURE)**
+- [ ] Release published (FUTURE — requires explicit operator approval)

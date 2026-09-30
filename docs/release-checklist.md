@@ -5,22 +5,24 @@ Multi-Agent Forex AI System. Tick items explicitly; anything unchecked is a reas
 hold the release. Tag creation and publication are **FUTURE steps** and must not
 happen without explicit operator approval.
 
-Status: **in preparation (2026-09-12)** — Phase 11 release prep.
+Status: **complete (2026-09-30)** — Phase A completion closeout. All test/lint/build
+gates verified green on the Phase A tree; `v0.1.0` tag exists at `d28af88`; tag
+publication remains a **FUTURE step** requiring explicit operator approval.
 
 ---
 
 ## Tests
 
-- [x] Backend unit: `make test-backend-unit` — 463 passed, coverage ≥ 90% (92.61%)
-- [x] Backend integration: `make test-backend-integration` — 102 passed (real PG/Redis)
-- [x] Frontend: `npm test` (vitest) — 66 passed
-- [ ] (Final gate) full `make verify` on the committed tree
+- [x] Backend unit: `make test-backend-unit` — 580 passed, coverage ≥ 90% (93.62%)
+- [x] Backend integration: `make test-backend-integration` — 124 passed (real PG/Redis, 0 skipped)
+- [x] Frontend: `npm test` (vitest) — 80 passed
+- [x] (Final gate) full `make verify` on the committed tree — green (exit 0) 2026-09-30
 
 ## Lint & typecheck
 
 - [x] `ruff check .` clean
-- [x] `ruff format --check` clean (212 files)
-- [x] `mypy app` clean (strict, 137 files)
+- [x] `ruff format --check` clean (241 files)
+- [x] `mypy app` clean (strict, 146 files)
 - [x] `eslint .` clean
 - [x] `tsc --noEmit` clean
 - [x] `next build` clean
@@ -45,6 +47,7 @@ Status: **in preparation (2026-09-12)** — Phase 11 release prep.
 - [x] `GET /health/live` → `{"status":"ok","mode":"safe"}`
 - [x] `GET /health/ready` → `{"status":"ok","mode":"safe"}`
 - [x] `GET /system/status` → db/redis/migrations OK, `version 0.1.0`, 5 workers `up`
+- [x] Alembic migration head `0008` applied (`0008_phase13_paper_ledger`)
 - [x] Frontend `http://localhost:3000` → HTTP 200
 - [x] Grafana `http://localhost:3001` healthy; Prometheus `:9090` healthy
 
@@ -58,6 +61,9 @@ Status: **in preparation (2026-09-12)** — Phase 11 release prep.
 
 - [x] Backend refuses non-`safe` `TRADING_MODE`
 - [x] No live-broker module / executor worker present (`app/broker` = paper only)
+- [x] Paper lifecycle operational (`PaperBroker`, migration `0008`,
+      `test_paper_lifecycle_pipeline` green; 5 worker roles up)
+- [x] M5/D1 not activated (market timeframes config-gated to M15/H1/H4)
 - [x] `safety`-marked regression suite green in unit + CI
 - [x] `/health/ready` and UI badge report SAFE MODE
 
@@ -75,7 +81,7 @@ Status: **in preparation (2026-09-12)** — Phase 11 release prep.
 - [x] `git ls-files` scan: no secrets/certs/backups/generated artifacts
 - [x] Staged placeholder anchors: `infra/certs/.gitkeep`, `infra/certs/README.md`,
       `backups/.gitignore`, `backups/.gitkeep`
-- [ ] (Final gate) `git diff --check` — no whitespace errors
+- [x] (Final gate) `git diff --check` — no whitespace errors (verified 2026-09-30)
 
 ## Documentation
 
@@ -101,15 +107,15 @@ Status: **in preparation (2026-09-12)** — Phase 11 release prep.
 
 ## Final git review
 
-- [ ] `git status` — only intended files staged/modified
-- [ ] `git diff --stat` — reviewed change set
-- [ ] `git diff --check` — clean
-- [ ] `git ls-files` — hygiene scan re-run after staging
+- [x] `git status` — only intended files staged/modified (exactly the 5 closeout docs)
+- [x] `git diff --stat` — reviewed change set
+- [x] `git diff --check` — clean
+- [x] `git ls-files` — hygiene scan re-run after staging (verified 2026-09-30)
 
-## Tag creation — FUTURE (requires explicit operator approval)
+## Tag creation
 
-- [ ] Create annotated tag `v0.1.0` at the approved commit
-- [ ] Confirm `v0.1.0` matches the CHANGELOG and versions
+- [x] Annotated tag `v0.1.0` created at `d28af88` (`release: v0.1.0`)
+- [x] `v0.1.0` matches CHANGELOG `[0.1.0]` and backend/frontend versions (`0.1.0`)
 
 ## Release publication — FUTURE (requires explicit operator approval)
 
